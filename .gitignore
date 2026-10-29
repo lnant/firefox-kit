@@ -1,6 +1,6 @@
 # 运行时数据：节点、浏览器数据、内核、生成的配置——只存本地，永不入库
 Surf/
-usb/Surf/
+script/Surf/
 *.exe
 *.syso
 *.prev
