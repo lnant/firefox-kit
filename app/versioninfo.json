@@ -1,7 +1,7 @@
 {
   "FixedFileInfo": {
-    "FileVersion": {"Major": 1, "Minor": 0, "Patch": 0, "Build": 0},
-    "ProductVersion": {"Major": 1, "Minor": 0, "Patch": 0, "Build": 0},
+    "FileVersion": {"Major": 1, "Minor": 0, "Patch": 1, "Build": 0},
+    "ProductVersion": {"Major": 1, "Minor": 0, "Patch": 1, "Build": 0},
     "FileFlagsMask": "3f",
     "FileFlags": "00",
     "FileOS": "040004",
@@ -11,12 +11,12 @@
   "StringFileInfo": {
     "CompanyName": "foxkit",
     "FileDescription": "foxkit 专用浏览器工具",
-    "FileVersion": "1.0.0",
+    "FileVersion": "1.0.1",
     "InternalName": "foxkit",
     "LegalCopyright": "foxkit",
     "OriginalFilename": "foxkit.exe",
     "ProductName": "foxkit 专用浏览器工具",
-    "ProductVersion": "1.0.0",
+    "ProductVersion": "1.0.1",
     "Comments": "支持 sing-box 的协议；节点与浏览器数据只存本地。"
   },
   "VarFileInfo": {

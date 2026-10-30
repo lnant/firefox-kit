@@ -11,6 +11,7 @@ package main
 //   <工具目录>/Surf/config.json              —— 当前生成的配置（.prev 是上一份）
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -66,6 +67,57 @@ func FirefoxPath(root string) string {
 }
 
 func FirefoxReady(root string) bool { return FirefoxPath(root) != "" }
+
+// firefoxPolicyValues 是写给工具包专用 Firefox 的企业策略：关掉它自带的
+// 应用更新、后台更新与默认浏览器代理。这三样会在 Windows 里注册计划任务，
+// 杀毒软件常把这类任务算作「可疑启动项」；浏览器的更新由工具包自己的
+// 按钮（准备浏览器）负责，不靠它自更新。
+var firefoxPolicyValues = map[string]any{
+	"DisableAppUpdate":           true,
+	"BackgroundAppUpdate":        false,
+	"DisableDefaultBrowserAgent": true,
+}
+
+// EnsureFirefoxPolicies 把策略写入专用 Firefox 程序目录下的
+// distribution/policies.json（Firefox 官方的企业策略机制，启动时读取）。
+// 只对工具目录内的 Firefox 副本动手；系统已装的 Firefox 一律不碰。
+// 已有 policies.json 时合并：保留其他策略，只覆写本程序负责的三项。
+// 内容已一致时不重复写；任何失败都静默放弃，不阻断浏览器启动。
+func EnsureFirefoxPolicies(root, ffPath string) {
+	dir := filepath.Dir(ffPath)
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return // 工具目录之外（系统安装版），不碰
+	}
+	target := filepath.Join(dir, "distribution", "policies.json")
+	doc := map[string]any{}
+	if b, err := os.ReadFile(target); err == nil {
+		var existing map[string]any
+		if json.Unmarshal(b, &existing) == nil && existing != nil {
+			doc = existing
+		}
+	}
+	pol, _ := doc["policies"].(map[string]any)
+	if pol == nil {
+		pol = map[string]any{}
+	}
+	for k, v := range firefoxPolicyValues {
+		pol[k] = v
+	}
+	doc["policies"] = pol
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return
+	}
+	out = append(out, '\n')
+	if cur, err := os.ReadFile(target); err == nil && string(cur) == string(out) {
+		return // 已落好且内容一致
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(target, out, 0o644)
+}
 
 func execCommand(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
@@ -166,6 +218,7 @@ func (r *Runner) Start(root string, n *Node) error {
 		r.stopCore()
 		return fmt.Errorf("找不到 Firefox 浏览器")
 	}
+	EnsureFirefoxPolicies(root, ff) // 落企业策略：关自带更新/后台任务/默认浏览器代理
 	fc := exec.Command(ff, "-profile", profileDir(root), "-no-remote")
 	prepCmd(fc)
 	if err := fc.Start(); err != nil {

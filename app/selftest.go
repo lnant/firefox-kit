@@ -11,6 +11,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -194,6 +196,74 @@ func RunSelfChecks() []CheckResult {
 	okc, detail := loopbackSocksTest()
 	out = append(out, check("回环连通测试（直连分支）", okc, detail))
 
+	// 浏览器企业策略：工具包副本落策略、系统路径不碰
+	out = append(out, firefoxPoliciesChecks()...)
+
+	return out
+}
+
+// firefoxPoliciesChecks 验证 EnsureFirefoxPolicies：
+// 1) 工具目录内的 Firefox 副本会生成含三项策略的 policies.json；
+// 2) 已有其他策略时合并保留、且重复调用结果稳定（幂等）；
+// 3) 工具目录外的路径（模拟系统安装版）不落任何文件。
+func firefoxPoliciesChecks() []CheckResult {
+	var out []CheckResult
+	root, err := os.MkdirTemp("", "foxkit-pol-root")
+	if err != nil {
+		return []CheckResult{check("浏览器策略写入", false, err.Error())}
+	}
+	defer os.RemoveAll(root)
+	ffDir := filepath.Join(root, "Surf", "Firefox")
+	if err := os.MkdirAll(ffDir, 0o755); err != nil {
+		return []CheckResult{check("浏览器策略写入", false, err.Error())}
+	}
+	ff := filepath.Join(ffDir, firefoxName())
+	if err := os.WriteFile(ff, []byte("dummy"), 0o755); err != nil {
+		return []CheckResult{check("浏览器策略写入", false, err.Error())}
+	}
+	target := filepath.Join(ffDir, "distribution", "policies.json")
+	readPol := func() map[string]any {
+		b, err := os.ReadFile(target)
+		if err != nil {
+			return nil
+		}
+		var doc map[string]any
+		if json.Unmarshal(b, &doc) != nil {
+			return nil
+		}
+		pol, _ := doc["policies"].(map[string]any)
+		return pol
+	}
+	EnsureFirefoxPolicies(root, ff)
+	pol := readPol()
+	ok := pol != nil && pol["DisableAppUpdate"] == true &&
+		pol["BackgroundAppUpdate"] == false && pol["DisableDefaultBrowserAgent"] == true
+	out = append(out, check("浏览器策略写入（关更新/后台任务/默认代理）", ok, fmt.Sprintf("%v", pol)))
+
+	// 合并与幂等：先塞一个无关策略，再调两次，结果应保留无关策略且两次一致
+	if pol != nil {
+		doc := map[string]any{"policies": map[string]any{"DisablePocket": true}}
+		b, _ := json.Marshal(doc)
+		_ = os.WriteFile(target, b, 0o644)
+		EnsureFirefoxPolicies(root, ff)
+		first, _ := os.ReadFile(target)
+		EnsureFirefoxPolicies(root, ff)
+		second, _ := os.ReadFile(target)
+		pol2 := readPol()
+		ok2 := pol2 != nil && pol2["DisablePocket"] == true && pol2["DisableAppUpdate"] == true &&
+			string(first) == string(second)
+		out = append(out, check("浏览器策略合并与幂等", ok2, "保留已有策略、重复写不变化"))
+	}
+
+	sysDir, err := os.MkdirTemp("", "foxkit-pol-sys")
+	if err == nil {
+		defer os.RemoveAll(sysDir)
+		sysFF := filepath.Join(sysDir, firefoxName())
+		_ = os.WriteFile(sysFF, []byte("dummy"), 0o755)
+		EnsureFirefoxPolicies(root, sysFF)
+		_, statErr := os.Stat(filepath.Join(sysDir, "distribution"))
+		out = append(out, check("系统路径的 Firefox 不落策略", os.IsNotExist(statErr), sysDir))
+	}
 	return out
 }
 
