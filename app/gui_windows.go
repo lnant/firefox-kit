@@ -215,7 +215,18 @@ func guiRefresh() {
 		setEnabled(btnUpdate, act.CanUpdateKernel)
 		setEnabled(btnCancel, g.busy == "testing" || g.busy == "downloading")
 		if guiProgress != nil && g.busy == "" {
+			guiProgress.SetRange(0, 100)
 			guiProgress.SetValue(0)
+		}
+	})
+}
+
+// guiSetProgress 从后台 goroutine 更新进度条（0-100）。
+func guiSetProgress(pct int) {
+	guiSync(func() {
+		if guiProgress != nil {
+			guiProgress.SetRange(0, 100)
+			guiProgress.SetValue(pct)
 		}
 	})
 }
@@ -572,14 +583,14 @@ func guiDoFirefox() {
 	}
 
 	if useInstaller {
-		if !askYesNo("准备浏览器", "从安装包 "+filepath.Base(installer)+" 提取 Firefox 到工具包（Surf\\Firefox）吗？\n全程不会安装，不写注册表；提取要花几分钟，请等记录里出结果。") {
+		if !askYesNo("准备浏览器", "从安装包 "+filepath.Base(installer)+" 提取 Firefox 到工具包（Surf\\Firefox）吗？\n全程不会安装，不写注册表；提取要花几分钟，窗口下方的进度条会一直走，跑完记录里会出结果。") {
 			return
 		}
 		g.setBusy("updating", nil)
 		go func() {
 			defer g.setBusy("", nil)
-			guiLog("正在从安装包提取 Firefox（要花几分钟）…")
-			if err := ExtractFirefoxFromInstaller(installer, g.root); err != nil {
+			guiLog("正在从安装包提取 Firefox（要花几分钟，看进度条）…")
+			if err := ExtractFirefoxFromInstaller(installer, g.root, guiSetProgress); err != nil {
 				guiLog("✘ 从安装包提取 Firefox 失败：" + err.Error())
 				msgError("准备浏览器", "提取失败："+err.Error())
 				return
@@ -594,7 +605,8 @@ func guiDoFirefox() {
 	g.setBusy("updating", nil)
 	go func() {
 		defer g.setBusy("", nil)
-		if err := copyDir(src, dst); err != nil {
+		guiLog("正在复制 Firefox 进工具包（看进度条）…")
+		if err := copyDirProgress(src, dst, guiSetProgress); err != nil {
 			guiLog("✘ 复制 Firefox 失败：" + err.Error())
 			msgError("准备浏览器", "复制失败："+err.Error())
 			return

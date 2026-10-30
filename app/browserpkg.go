@@ -68,7 +68,8 @@ func FindFirefoxInstaller(root string) string {
 
 // ExtractFirefoxFromInstaller 把安装包里的 core/ 提取为 Surf/Firefox。
 // 先解到临时目录、验明 firefox 本体在，再换到位，失败不破坏已有浏览器。
-func ExtractFirefoxFromInstaller(installer, root string) error {
+// progress 按解出字节上报 0-100（提取要几分钟，没有进度看着像死机）。
+func ExtractFirefoxFromInstaller(installer, root string, progress func(pct int)) error {
 	dst := filepath.Join(surfDir(root), "Firefox")
 	tmp := filepath.Join(surfDir(root), "tmp", "ffx-extract")
 	_ = os.RemoveAll(tmp)
@@ -82,6 +83,17 @@ func ExtractFirefoxFromInstaller(installer, root string) error {
 		return fmt.Errorf("安装包打不开（不是官方完整版安装包？）：%v", err)
 	}
 	defer r.Close()
+
+	// 先算 core/ 的总字节数，进度才有分母
+	var total int64
+	for _, f := range r.File {
+		name := strings.ReplaceAll(f.Name, "\\", "/")
+		name = strings.TrimPrefix(name, "./")
+		if !f.FileInfo().IsDir() && strings.HasPrefix(name, "core/") {
+			total += int64(f.UncompressedSize) //nolint:gosec
+		}
+	}
+	rep := newPctReporter(total, progress)
 
 	found := false
 	for _, f := range r.File {
@@ -110,7 +122,7 @@ func ExtractFirefoxFromInstaller(installer, root string) error {
 			rc.Close()
 			return err
 		}
-		_, err = io.Copy(w, rc)
+		_, err = io.Copy(w, &progressReader{r: rc, onBytes: rep.add})
 		rc.Close()
 		w.Close()
 		if err != nil {
