@@ -535,7 +535,15 @@ func guiDoCancel() {
 }
 
 func guiDoFirefox() {
-	// 优先把本机已装的 Firefox 程序目录复制进工具包（便携用）；没有已装的就说明办法。
+	// 两种模式共存，效果一样（都把 Firefox 程序放进 Surf\Firefox）：
+	// A）本机已装 Firefox → 直接复制它的程序目录；
+	// B）没装也行 → 从工具文件夹里的官方完整版安装包提取，全程不安装。
+	// 两种来源都在时，让用户自己选。
+	dst := filepath.Join(surfDir(g.root), "Firefox")
+	if fileExists(filepath.Join(dst, firefoxName())) {
+		msgInfo("准备浏览器", "工具包里已经有 Firefox 了（Surf\\Firefox），不用再准备。")
+		return
+	}
 	src := ""
 	for _, c := range []string{`C:\Program Files\Mozilla Firefox`, `C:\Program Files (x86)\Mozilla Firefox`} {
 		if st, err := os.Stat(filepath.Join(c, "firefox.exe")); err == nil && !st.IsDir() {
@@ -543,13 +551,41 @@ func guiDoFirefox() {
 			break
 		}
 	}
-	dst := filepath.Join(surfDir(g.root), "Firefox")
-	if src == "" {
-		if fileExists(filepath.Join(dst, firefoxName())) {
-			msgInfo("准备浏览器", "工具包里已经有 Firefox 了（Surf\\Firefox），不用再准备。")
+	installer := FindFirefoxInstaller(g.root)
+
+	useInstaller := false
+	switch {
+	case src != "" && installer != "":
+		// 都在：先问复制本机的，点「否」就改用安装包提取
+		if askYesNo("准备浏览器", "两种来源都有：\n\n点「是」：复制本机已安装的 Firefox 进工具包；\n点「否」：改用工具文件夹里的安装包（"+filepath.Base(installer)+"）提取，不用安装。") {
+			useInstaller = false
+		} else {
+			useInstaller = true
+		}
+	case installer != "":
+		useInstaller = true
+	case src != "":
+		useInstaller = false
+	default:
+		msgInfo("准备浏览器", "现在还没有可用的 Firefox 来源。\n\n两个办法（任选其一）：\n1）把 Firefox 官方完整版安装包（Firefox Setup … .exe，约 90MB）放进工具文件夹，再点这个按钮，我直接从安装包提取，不用先安装；注意不要用几百 KB 的在线安装包；\n2）先装好 Firefox（官方版），再点这个按钮，我会把它的程序复制进工具包。\n\n浏览器的数据（登录、历史）存在 Surf\\ff-data，与程序分开，更新程序不会动它。")
+		return
+	}
+
+	if useInstaller {
+		if !askYesNo("准备浏览器", "从安装包 "+filepath.Base(installer)+" 提取 Firefox 到工具包（Surf\\Firefox）吗？\n全程不会安装，不写注册表；提取要花几分钟，请等记录里出结果。") {
 			return
 		}
-		msgInfo("准备浏览器", "这台电脑上还没装 Firefox。\n\n两个办法：\n1）先装好 Firefox（官方版），再点一次这个按钮，我会把它的程序复制进工具包，之后带着工具包到哪都能用；\n2）把别人电脑上装好的 Firefox 程序文件夹整个复制到工具目录的 Surf\\Firefox 里。\n\n浏览器的数据（登录、历史）存在 Surf\\ff-data，与程序分开，更新程序不会动它。")
+		g.setBusy("updating", nil)
+		go func() {
+			defer g.setBusy("", nil)
+			guiLog("正在从安装包提取 Firefox（要花几分钟）…")
+			if err := ExtractFirefoxFromInstaller(installer, g.root); err != nil {
+				guiLog("✘ 从安装包提取 Firefox 失败：" + err.Error())
+				msgError("准备浏览器", "提取失败："+err.Error())
+				return
+			}
+			guiLog("✓ 浏览器已就绪（已从安装包提取进工具包）。")
+		}()
 		return
 	}
 	if !askYesNo("准备浏览器", "把本机的 Firefox 程序复制进工具包（Surf\\Firefox）吗？\n之后工具包就是便携的，插到哪台电脑都能用。") {
