@@ -74,6 +74,10 @@ type nodeListModel struct {
 func (m *nodeListModel) ItemCount() int  { return len(m.items) }
 func (m *nodeListModel) Value(i int) any { return m.items[i] }
 
+// guiSync 只是把函数排队到稍后的 UI 消息循环里执行，并不会等它执行完。
+// 因此它只能用于日志、刷新、进度等不取返回值的更新；按钮事件本身已经在
+// UI 线程里，读取控件值、弹确认框时必须直接调用，不能经过 guiSync，
+// 否则会出现“控件里明明有内容、程序却读到空”的竞态。
 func guiSync(f func()) {
 	if guiMW != nil {
 		guiMW.Synchronize(f)
@@ -89,8 +93,8 @@ func guiLog(s string) {
 }
 
 func (a *guiApp) selected() *LibEntry {
-	idx := -1
-	guiSync(func() { idx = guiList.CurrentIndex() })
+	// 只从按钮/列表事件里调用，调用时已经在 UI 线程，直接读当前序号。
+	idx := guiList.CurrentIndex()
 	if idx < 0 || idx >= len(a.entries) {
 		return nil
 	}
@@ -231,12 +235,10 @@ func msgError(title, text string) {
 	guiSync(func() { walk.MsgBox(guiMW, title, text, walk.MsgBoxOK|walk.MsgBoxIconError) })
 }
 func askYesNo(title, text string) bool {
-	ch := make(chan bool, 1)
-	guiSync(func() {
-		r := walk.MsgBox(guiMW, title, text, walk.MsgBoxYesNo|walk.MsgBoxIconQuestion)
-		ch <- r == walk.DlgCmdYes
-	})
-	return <-ch
+	// 只从按钮事件里调用，调用时已经在 UI 线程。若再经 guiSync 排队又立刻
+	// 等结果，消息循环会被当前事件占住，确认框反而出不来。
+	r := walk.MsgBox(guiMW, title, text, walk.MsgBoxYesNo|walk.MsgBoxIconQuestion)
+	return r == walk.DlgCmdYes
 }
 
 // promptText 弹一个带输入框的小对话框（订阅地址、改名用）。
@@ -276,8 +278,8 @@ func promptText(title, label, initial string) (string, bool) {
 // ---------------- 各按钮动作 ----------------
 
 func guiDoImport() {
-	var text string
-	guiSync(func() { text = guiImportBox.Text() })
+	// 按钮事件就在 UI 线程里，直接取粘贴框内容；经 guiSync 排队会读到空。
+	text := guiImportBox.Text()
 	if strings.TrimSpace(text) == "" {
 		msgInfo("导入节点", "先把节点内容粘贴到上面的框里，再点导入。")
 		return
@@ -292,17 +294,15 @@ func guiDoImport() {
 		guiLog("  ✘ " + f.Text + " —— " + f.Reason)
 	}
 	// 失败的条目留在框里，改好了可以再点导入，不会丢
-	guiSync(func() {
-		if len(rep.Failed) > 0 {
-			var left []string
-			for _, f := range rep.Failed {
-				left = append(left, f.Text)
-			}
-			_ = guiImportBox.SetText(strings.Join(left, "\r\n"))
-		} else {
-			_ = guiImportBox.SetText("")
+	if len(rep.Failed) > 0 {
+		var left []string
+		for _, f := range rep.Failed {
+			left = append(left, f.Text)
 		}
-	})
+		_ = guiImportBox.SetText(strings.Join(left, "\r\n"))
+	} else {
+		_ = guiImportBox.SetText("")
+	}
 	if len(rep.Failed) > 0 {
 		msgInfo("导入完成", rep.Summary()+"\n失败的条目还留在粘贴框里，改好后可以再导入。")
 	}
@@ -617,9 +617,9 @@ func runGUI() bool {
 				Layout: VBox{Spacing: 5},
 				Children: []Widget{
 					ListBox{
-						AssignTo:         &guiList,
-						Model:            guiModel,
-						OnItemActivated:  guiDoSetCurrent,
+						AssignTo:              &guiList,
+						Model:                 guiModel,
+						OnItemActivated:       guiDoSetCurrent,
 						OnCurrentIndexChanged: func() { guiRefresh() },
 					},
 					Composite{
