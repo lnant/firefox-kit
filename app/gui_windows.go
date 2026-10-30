@@ -221,12 +221,27 @@ func guiRefresh() {
 	})
 }
 
-// guiSetProgress 从后台 goroutine 更新进度条（0-100）。
+// guiBusyLabel 当前长耗时操作的名字（如“正在从安装包提取 Firefox”），
+// guiSetProgress 会把百分比直接写进顶部状态行——光靠一条细进度条，
+// 用户不一定找得到、也不一定看得见它动。
+var guiBusyLabel string
+
+// guiSetProgress 从后台 goroutine 更新进度（0-100）：进度条 + 状态行百分比。
 func guiSetProgress(pct int) {
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
 	guiSync(func() {
 		if guiProgress != nil {
 			guiProgress.SetRange(0, 100)
 			guiProgress.SetValue(pct)
+		}
+		if guiBusyLabel != "" && guiStatusDot != nil {
+			_ = guiStatusDot.SetText(fmt.Sprintf("● %s… %d%%", guiBusyLabel, pct))
+			guiStatusDot.SetTextColor(colorBusy)
 		}
 	})
 }
@@ -242,6 +257,9 @@ func (a *guiApp) setBusy(b string, cancel context.CancelFunc) {
 	a.busy = b
 	a.cancelFn = cancel
 	a.mu.Unlock()
+	if b == "" {
+		guiBusyLabel = ""
+	}
 	guiRefresh()
 }
 
@@ -481,15 +499,11 @@ func guiDoKernel() {
 	go func() {
 		defer func() { g.setBusy("", nil); cancel() }()
 		guiLog("正在从 sing-box 官方 GitHub 准备内核…")
+		guiBusyLabel = "正在下载内核"
 		lastLog := -1
 		err := DownloadKernel(ctx, g.root, func(pct int) {
 			if pct >= 0 {
-				guiSync(func() {
-					if guiProgress != nil {
-						guiProgress.SetRange(0, 100)
-						guiProgress.SetValue(pct)
-					}
-				})
+				guiSetProgress(pct)
 				if pct/20 != lastLog {
 					lastLog = pct / 20
 					guiLog(fmt.Sprintf("  下载进度 %d%%", pct))
@@ -583,14 +597,24 @@ func guiDoFirefox() {
 	}
 
 	if useInstaller {
-		if !askYesNo("准备浏览器", "从安装包 "+filepath.Base(installer)+" 提取 Firefox 到工具包（Surf\\Firefox）吗？\n全程不会安装，不写注册表；提取要花几分钟，窗口下方的进度条会一直走，跑完记录里会出结果。") {
+		if !askYesNo("准备浏览器", "从安装包 "+filepath.Base(installer)+" 提取 Firefox 到工具包（Surf\\Firefox）吗？\n全程不会安装，不写注册表；提取要花几分钟，窗口顶部状态行会显示百分比，记录里每 10% 也会打一行，跑完会出结果。") {
 			return
 		}
 		g.setBusy("updating", nil)
 		go func() {
 			defer g.setBusy("", nil)
-			guiLog("正在从安装包提取 Firefox（要花几分钟，看进度条）…")
-			if err := ExtractFirefoxFromInstaller(installer, g.root, guiSetProgress); err != nil {
+			guiBusyLabel = "正在从安装包提取 Firefox"
+			guiSetProgress(0)
+			guiLog("正在从安装包提取 Firefox（要花几分钟）…")
+			lastLog := -1
+			prog := func(pct int) {
+				guiSetProgress(pct)
+				if pct/10 != lastLog {
+					lastLog = pct / 10
+					guiLog(fmt.Sprintf("  提取进度 %d%%", pct))
+				}
+			}
+			if err := ExtractFirefoxFromInstaller(installer, g.root, prog); err != nil {
 				guiLog("✘ 从安装包提取 Firefox 失败：" + err.Error())
 				msgError("准备浏览器", "提取失败："+err.Error())
 				return
@@ -605,8 +629,18 @@ func guiDoFirefox() {
 	g.setBusy("updating", nil)
 	go func() {
 		defer g.setBusy("", nil)
-		guiLog("正在复制 Firefox 进工具包（看进度条）…")
-		if err := copyDirProgress(src, dst, guiSetProgress); err != nil {
+		guiBusyLabel = "正在复制 Firefox"
+		guiSetProgress(0)
+		guiLog("正在复制 Firefox 进工具包…")
+		lastLog := -1
+		prog := func(pct int) {
+			guiSetProgress(pct)
+			if pct/10 != lastLog {
+				lastLog = pct / 10
+				guiLog(fmt.Sprintf("  复制进度 %d%%", pct))
+			}
+		}
+		if err := copyDirProgress(src, dst, prog); err != nil {
 			guiLog("✘ 复制 Firefox 失败：" + err.Error())
 			msgError("准备浏览器", "复制失败："+err.Error())
 			return
@@ -730,7 +764,7 @@ func runGUI() bool {
 							PushButton{AssignTo: &btnKernel, Text: "准备内核", OnClicked: guiDoKernel},
 						},
 					},
-					ProgressBar{AssignTo: &guiProgress, MaxValue: 100},
+					ProgressBar{AssignTo: &guiProgress, MaxValue: 100, MinSize: Size{Width: 0, Height: 20}},
 				},
 			},
 			Composite{
