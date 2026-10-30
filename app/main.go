@@ -20,8 +20,8 @@ const AppVersion = "1.0.0"
 
 var logFn = func(s string) { fmt.Println(s) }
 
-func pln(s string)                 { logFn(s) }
-func pf(format string, a ...any)   { logFn(fmt.Sprintf(format, a...)) }
+func pln(s string)               { logFn(s) }
+func pf(format string, a ...any) { logFn(fmt.Sprintf(format, a...)) }
 
 func main() {
 	setupConsole()
@@ -96,6 +96,9 @@ func consoleMain() {
 	}
 	if RecoverStale(root) {
 		pln("（已清理上次异常退出留下的内核进程）")
+	}
+	if AdoptLooseKernel(root) {
+		pln("（已把放在工具文件夹根目录的 sing-box 内核收进 Surf/core）")
 	}
 	pf("foxkit %s（sing-box 版）控制台", AppVersion)
 	for {

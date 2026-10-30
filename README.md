@@ -38,7 +38,9 @@
 | Firefox 浏览器 | 用电脑上**已装好的官方 Firefox**；想做成便携的，点「准备浏览器」，它会把已装 Firefox 的程序复制进工具包 | 程序**不会下载 Firefox**；电脑上没装 Firefox 的，先装官方版再点「准备浏览器」。装了 Firefox 但不复制，也能直接用，只是换台没装 Firefox 的电脑就跑不了 |
 
 内核自动下载不成功时的兜底：把官方 sing-box 安装包解压出的 `sing-box.exe`
-和 `libcronet.dll` 手动放进 `Surf/core/`，程序一样认。
+和 `libcronet.dll` 手动放进 `Surf/core/`，程序一样认。放错到工具文件夹
+根目录也没关系：程序启动时会自动把根目录的 `sing-box.exe`（连同
+`libcronet.dll`）收进 `Surf/core/`。
 
 都备好后，文件夹长这样（`ff-data`、`config.json` 是自动生成的，不用手动建）：
 

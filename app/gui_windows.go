@@ -55,13 +55,15 @@ var (
 )
 
 type guiApp struct {
-	mu       sync.Mutex
-	root     string
-	entries  []*LibEntry
-	current  *LibEntry
-	runner   *Runner
-	busy     string
-	cancelFn context.CancelFunc
+	mu        sync.Mutex
+	root      string
+	entries   []*LibEntry
+	current   *LibEntry
+	runner    *Runner
+	busy      string
+	cancelFn  context.CancelFunc
+	sel       int  // 列表里选中的序号，自己记，不读原生控件（刷新重置列表会把原生选择冲掉）
+	restoring bool // 正在恢复选择时，忽略列表控件自己发出的序号变化事件
 }
 
 var g *guiApp
@@ -93,12 +95,12 @@ func guiLog(s string) {
 }
 
 func (a *guiApp) selected() *LibEntry {
-	// 只从按钮/列表事件里调用，调用时已经在 UI 线程，直接读当前序号。
-	idx := guiList.CurrentIndex()
-	if idx < 0 || idx >= len(a.entries) {
+	// 选择记在 a.sel 里（由列表的序号变化事件在 UI 线程更新），不读原生控件：
+	// 列表每次重置，原生选择都可能被清掉，读它会出现“行明明蓝着、程序却说没选”。
+	if a.sel < 0 || a.sel >= len(a.entries) {
 		return nil
 	}
-	return a.entries[idx]
+	return a.entries[a.sel]
 }
 
 func (a *guiApp) state() KitState {
@@ -123,9 +125,12 @@ func guiRefresh() {
 	if g == nil {
 		return
 	}
+	// 用户把内核文件直接放在工具根目录时，先收编进 Surf/core 再算状态。
+	AdoptLooseKernel(g.root)
 	act := ComputeActions(g.state())
 	guiSync(func() {
-		// 列表
+		// 列表：内容没变就不重置——重置会清掉原生选择，恢复又靠不住，
+		// 曾导致“行还蓝着、按钮却全是灰的”。
 		items := make([]string, 0, len(g.entries))
 		for _, e := range g.entries {
 			prefix := ""
@@ -135,9 +140,26 @@ func guiRefresh() {
 			items = append(items, prefix+e.Display())
 		}
 		if guiModel != nil {
-			guiModel.items = items
-			guiModel.PublishItemsReset()
+			changed := len(items) != len(guiModel.items)
+			if !changed {
+				for i := range items {
+					if items[i] != guiModel.items[i] {
+						changed = true
+						break
+					}
+				}
+			}
+			if changed {
+				g.restoring = true
+				guiModel.items = items
+				guiModel.PublishItemsReset()
+				g.restoring = false
+				if guiList != nil && g.sel >= 0 && g.sel < len(items) && guiList.CurrentIndex() != g.sel {
+					_ = guiList.SetCurrentIndex(g.sel)
+				}
+			}
 		}
+		selEntry := g.selected()
 		// 状态栏
 		if guiNodeLabel != nil {
 			if g.current != nil {
@@ -170,10 +192,10 @@ func guiRefresh() {
 			}
 			_ = guiHintLabel.SetText(hint)
 		}
-		setEnabled(btnSetCurrent, act.CanSelect && g.selectedNoSync() != nil)
-		setEnabled(btnTestOne, act.CanTestOne && g.selectedNoSync() != nil)
-		setEnabled(btnDelete, g.selectedNoSync() != nil && !g.runner.Running && g.busy == "")
-		setEnabled(btnRename, g.selectedNoSync() != nil && g.busy == "")
+		setEnabled(btnSetCurrent, act.CanSelect && selEntry != nil)
+		setEnabled(btnTestOne, act.CanTestOne && selEntry != nil)
+		setEnabled(btnDelete, selEntry != nil && !g.runner.Running && g.busy == "")
+		setEnabled(btnRename, selEntry != nil && g.busy == "")
 		setEnabled(btnImport, g.busy == "")
 		setEnabled(btnSub, act.CanFetchSub)
 		setEnabled(btnTestAll, act.CanTestAll)
@@ -187,25 +209,15 @@ func guiRefresh() {
 				_ = btnKernel.SetText("准备内核")
 			}
 		}
-		setEnabled(btnFirefox, !FirefoxReady(g.root) && g.busy == "")
+		// 「准备浏览器」是把已装 Firefox 复制进工具包做便携用：本机装了 Firefox
+		// 时也得能点，否则在装了 Firefox 的电脑上组装 U 盘时反而没法复制。
+		setEnabled(btnFirefox, g.busy == "" && !g.runner.Running)
 		setEnabled(btnUpdate, act.CanUpdateKernel)
 		setEnabled(btnCancel, g.busy == "testing" || g.busy == "downloading")
 		if guiProgress != nil && g.busy == "" {
 			guiProgress.SetValue(0)
 		}
 	})
-}
-
-// selectedNoSync 只能在 UI 线程里调用（guiRefresh 的 Synchronize 内）。
-func (a *guiApp) selectedNoSync() *LibEntry {
-	if guiList == nil {
-		return nil
-	}
-	idx := guiList.CurrentIndex()
-	if idx < 0 || idx >= len(a.entries) {
-		return nil
-	}
-	return a.entries[idx]
 }
 
 func setEnabled(b *walk.PushButton, on bool) {
@@ -289,6 +301,10 @@ func guiDoImport() {
 	if rep.Added > 0 {
 		g.saveLib()
 	}
+	// 有节点时默认选中第一条，下一步的按钮直接就能点，少绕一步。
+	if len(g.entries) > 0 && g.sel < 0 {
+		g.sel = 0
+	}
 	guiLog("导入结果：" + rep.Summary())
 	for _, f := range rep.Failed {
 		guiLog("  ✘ " + f.Text + " —— " + f.Reason)
@@ -367,6 +383,9 @@ func guiDoDelete() {
 	if g.current == e {
 		g.current = nil
 		_ = os.Remove(nodePath(g.root))
+	}
+	if g.sel >= len(g.entries) {
+		g.sel = len(g.entries) - 1
 	}
 	g.saveLib()
 	guiLog("✓ 已删除节点：" + e.Node.DisplayName())
@@ -524,11 +543,15 @@ func guiDoFirefox() {
 			break
 		}
 	}
+	dst := filepath.Join(surfDir(g.root), "Firefox")
 	if src == "" {
+		if fileExists(filepath.Join(dst, firefoxName())) {
+			msgInfo("准备浏览器", "工具包里已经有 Firefox 了（Surf\\Firefox），不用再准备。")
+			return
+		}
 		msgInfo("准备浏览器", "这台电脑上还没装 Firefox。\n\n两个办法：\n1）先装好 Firefox（官方版），再点一次这个按钮，我会把它的程序复制进工具包，之后带着工具包到哪都能用；\n2）把别人电脑上装好的 Firefox 程序文件夹整个复制到工具目录的 Surf\\Firefox 里。\n\n浏览器的数据（登录、历史）存在 Surf\\ff-data，与程序分开，更新程序不会动它。")
 		return
 	}
-	dst := filepath.Join(surfDir(g.root), "Firefox")
 	if !askYesNo("准备浏览器", "把本机的 Firefox 程序复制进工具包（Surf\\Firefox）吗？\n之后工具包就是便携的，插到哪台电脑都能用。") {
 		return
 	}
@@ -558,14 +581,18 @@ func guiDoFolder() {
 func runGUI() bool {
 	logFn = guiLog
 	root := exeDir()
-	g = &guiApp{root: root, runner: NewRunner()}
+	g = &guiApp{root: root, runner: NewRunner(), sel: -1}
 	g.entries = LoadLibrary(root)
 	if link := ReadCurrentLink(root); link != "" {
-		for _, e := range g.entries {
+		for i, e := range g.entries {
 			if e.Link == link {
 				g.current = e
+				g.sel = i
 			}
 		}
+	}
+	if g.sel < 0 && len(g.entries) > 0 {
+		g.sel = 0
 	}
 	guiModel = &nodeListModel{}
 
@@ -617,10 +644,17 @@ func runGUI() bool {
 				Layout: VBox{Spacing: 5},
 				Children: []Widget{
 					ListBox{
-						AssignTo:              &guiList,
-						Model:                 guiModel,
-						OnItemActivated:       guiDoSetCurrent,
-						OnCurrentIndexChanged: func() { guiRefresh() },
+						AssignTo:        &guiList,
+						Model:           guiModel,
+						OnItemActivated: guiDoSetCurrent,
+						OnCurrentIndexChanged: func() {
+							// 事件就在 UI 线程，直接读原生序号记下来；
+							// 刷新恢复选择期间控件自己发的变化不算数。
+							if g != nil && !g.restoring && guiList != nil {
+								g.sel = guiList.CurrentIndex()
+							}
+							guiRefresh()
+						},
 					},
 					Composite{
 						Layout: HBox{Spacing: 6},
@@ -693,6 +727,9 @@ func runGUI() bool {
 	})
 	if RecoverStale(root) {
 		guiLog("（已清理上次没正常退出留下的内核进程）")
+	}
+	if AdoptLooseKernel(root) {
+		guiLog("（已把放在工具文件夹根目录的 sing-box 内核收进 Surf\\core）")
 	}
 	if v := KernelVersion(root); v != "" {
 		guiLog("内核：sing-box " + v)

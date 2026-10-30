@@ -19,12 +19,37 @@ import (
 	"time"
 )
 
-func coreDir(root string) string    { return filepath.Join(surfDir(root), "core") }
-func singboxName() string           { return binName("sing-box") }
+func coreDir(root string) string     { return filepath.Join(surfDir(root), "core") }
+func singboxName() string            { return binName("sing-box") }
 func singboxPath(root string) string { return filepath.Join(coreDir(root), singboxName()) }
-func singboxBak(root string) string { return singboxPath(root) + ".bak" }
+func singboxBak(root string) string  { return singboxPath(root) + ".bak" }
 
 func KernelReady(root string) bool { return fileExists(singboxPath(root)) }
+
+// AdoptLooseKernel 收编放在工具根目录的内核文件：用户按“文件都放一个
+// 文件夹”的直觉把 sing-box.exe 摆在根目录时，程序自动把它（连同
+// libcronet）复制进 Surf/core，不让人白放。已就位时不动，返回是否收编过。
+func AdoptLooseKernel(root string) bool {
+	if KernelReady(root) {
+		return false
+	}
+	src := filepath.Join(root, singboxName())
+	if !fileExists(src) {
+		return false
+	}
+	if err := os.MkdirAll(coreDir(root), 0o755); err != nil {
+		return false
+	}
+	if err := copyFileSimple(src, singboxPath(root)); err != nil {
+		return false
+	}
+	for _, extra := range []string{"libcronet.dll", "libcronet.so"} {
+		if p := filepath.Join(root, extra); fileExists(p) {
+			_ = copyFileSimple(p, filepath.Join(coreDir(root), extra))
+		}
+	}
+	return KernelReady(root)
+}
 
 func KernelVersion(root string) string {
 	p := singboxPath(root)
