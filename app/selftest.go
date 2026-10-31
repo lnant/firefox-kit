@@ -28,16 +28,16 @@ func check(name string, ok bool, detail string) CheckResult {
 }
 
 const (
-	sampleVMess = "vmess://eyJ2IjoiMiIsInBzIjoidm1lc3Mtd3MtdGVzdCIsImFkZCI6IjIwMy4wLjExMy4xMCIsInBvcnQiOiI0NDMiLCJpZCI6IjExMTExMTExLTIyMjItMzMzMy00NDQ0LTU1NTU1NTU1NTU1NSIsImFpZCI6IjAiLCJuZXQiOiJ3cyIsInR5cGUiOiJub25lIiwiaG9zdCI6ImNkbi5leGFtcGxlLmNvbSIsInBhdGgiOiIvd3MiLCJ0bHMiOiJ0bHMifQ=="
-	sampleVLESS = "vless://22222222-3333-4444-5555-666666666666@203.0.113.20:443?security=reality&encryption=none&flow=xtls-rprx-vision&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=abcd&sni=www.example.com&fp=chrome&type=tcp#vless-reality"
+	sampleVMess  = "vmess://eyJ2IjoiMiIsInBzIjoidm1lc3Mtd3MtdGVzdCIsImFkZCI6IjIwMy4wLjExMy4xMCIsInBvcnQiOiI0NDMiLCJpZCI6IjExMTExMTExLTIyMjItMzMzMy00NDQ0LTU1NTU1NTU1NTU1NSIsImFpZCI6IjAiLCJuZXQiOiJ3cyIsInR5cGUiOiJub25lIiwiaG9zdCI6ImNkbi5leGFtcGxlLmNvbSIsInBhdGgiOiIvd3MiLCJ0bHMiOiJ0bHMifQ=="
+	sampleVLESS  = "vless://22222222-3333-4444-5555-666666666666@203.0.113.20:443?security=reality&encryption=none&flow=xtls-rprx-vision&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=abcd&sni=www.example.com&fp=chrome&type=tcp#vless-reality"
 	sampleTrojan = "trojan://passw0rd@203.0.113.30:443?peer=cdn.example.com#trojan-node"
-	sampleSS    = "ss://YWVzLTI1Ni1nY206cGFzc3cwcmQ@203.0.113.40:8388#ss-node"
-	sampleHY2   = "hysteria2://passw0rd@203.0.113.50:443?insecure=0&sni=hy.example.com&obfs=salamander&obfs-password=obfssecret#hy2-node"
-	sampleTUIC  = "tuic://33333333-4444-5555-6666-777777777777:passw0rd@203.0.113.60:443?congestion_control=bbr&sni=tuic.example.com#tuic-node"
-	sampleWG    = "wireguard://AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=@203.0.113.70:51820?publickey=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=&address=172.16.0.2/32&mtu=1280#wg-node"
+	sampleSS     = "ss://YWVzLTI1Ni1nY206cGFzc3cwcmQ@203.0.113.40:8388#ss-node"
+	sampleHY2    = "hysteria2://passw0rd@203.0.113.50:443?insecure=0&sni=hy.example.com&obfs=salamander&obfs-password=obfssecret#hy2-node"
+	sampleTUIC   = "tuic://33333333-4444-5555-6666-777777777777:passw0rd@203.0.113.60:443?congestion_control=bbr&sni=tuic.example.com#tuic-node"
+	sampleWG     = "wireguard://AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=@203.0.113.70:51820?publickey=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=&address=172.16.0.2/32&mtu=1280#wg-node"
 	sampleAnyTLS = "anytls://passw0rd@203.0.113.80:443?sni=any.example.com#anytls-node"
-	sampleSSH   = "ssh://user1:passw0rd@203.0.113.90:22#ssh-node"
-	sampleArgo  = "vmess://eyJ2IjoiMiIsInBzIjoiYXJnby1ub2RlIiwiYWRkIjoiYXJnby5leGFtcGxlLmNvbSIsInBvcnQiOiI0NDMiLCJpZCI6IjExMTExMTExLTIyMjItMzMzMy00NDQ0LTU1NTU1NTU1NTU1NSIsImFpZCI6IjAiLCJuZXQiOiJ3cyIsInR5cGUiOiJub25lIiwiaG9zdCI6ImFyZ28uZXhhbXBsZS5jb20iLCJwYXRoIjoiL2FyZ28iLCJ0bHMiOiJ0bHMifQ=="
+	sampleSSH    = "ssh://user1:passw0rd@203.0.113.90:22#ssh-node"
+	sampleArgo   = "vmess://eyJ2IjoiMiIsInBzIjoiYXJnby1ub2RlIiwiYWRkIjoiYXJnby5leGFtcGxlLmNvbSIsInBvcnQiOiI0NDMiLCJpZCI6IjExMTExMTExLTIyMjItMzMzMy00NDQ0LTU1NTU1NTU1NTU1NSIsImFpZCI6IjAiLCJuZXQiOiJ3cyIsInR5cGUiOiJub25lIiwiaG9zdCI6ImFyZ28uZXhhbXBsZS5jb20iLCJwYXRoIjoiL2FyZ28iLCJ0bHMiOiJ0bHMifQ=="
 )
 
 func RunSelfChecks() []CheckResult {
@@ -170,7 +170,7 @@ func RunSelfChecks() []CheckResult {
 		sampleVMess, // 重复
 		"vmess://!!!not-base64!!!",
 		"203.0.113.200:99999:user1:passw0rd", // 端口越界
-		"203.0.113.201:1080",                  // 裸 SOCKS，好
+		"203.0.113.201:1080",                 // 裸 SOCKS，好
 	}, "\n")
 	rep := ImportText(nil, text)
 	ok := rep.Added == 3 && rep.Duplicates == 1 && len(rep.Failed) == 2
@@ -191,6 +191,19 @@ func RunSelfChecks() []CheckResult {
 	out = append(out, check("直连节点不需要内核也能启动", a2.CanStart, a2.StartHint))
 	a3 := ComputeActions(KitState{NodeCount: 2, HasCurrent: true, CurrentBranch: BranchProtocol, KernelReady: true, FirefoxReady: true, Running: true})
 	out = append(out, check("运行中锁定切换与测试", !a3.CanSelect && !a3.CanTestAll && a3.CanStop && a3.CanImport, a3.SelectHint))
+
+	// 组件更新检测：版本比较、重大/普通判定、application.ini 解析（纯本地，不联网）
+	out = append(out, check("版本比较：数字段逐段比（1.9 < 1.10）",
+		compareVersions("1.9", "1.10") < 0 && compareVersions("1.14.4", "1.14.4") == 0 && compareVersions("160.0", "159.0") > 0,
+		"1.9<1.10、相等=0、160>159"))
+	out = append(out, check("重大更新判定：Firefox 看首段（159→160 重大、159.0→159.0.1 普通）",
+		updateLevel("159.0", "160.0", 1) == UpdateMajor && updateLevel("159.0", "159.0.1", 1) == UpdateMinor && updateLevel("159.0", "159.0", 1) == UpdateNone,
+		"train=1"))
+	out = append(out, check("重大更新判定：sing-box 看前两段（1.14→1.15 重大、末段小修普通）",
+		updateLevel("1.14.4", "1.15.0", 2) == UpdateMajor && updateLevel("1.14.4", "1.14.5", 2) == UpdateMinor && updateLevel("1.14.4", "1.14.4", 2) == UpdateNone,
+		"train=2"))
+	sampleIni := "[App]\nVendor=Mozilla\nName=Firefox\nVersion=159.0\nBuildID=20261001000000\n\n[XRE]\nEnableExtensionManager=1\n"
+	out = append(out, check("application.ini 解析 Firefox 版本", parseAppIniVersion(sampleIni) == "159.0", parseAppIniVersion(sampleIni)))
 
 	// 本地回环连通测试（假 SOCKS 服务器 -> 本机 HTTP 204 服务）
 	okc, detail := loopbackSocksTest()

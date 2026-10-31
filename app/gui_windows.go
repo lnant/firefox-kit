@@ -16,21 +16,24 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
 )
 
 var (
-	guiMW        *walk.MainWindow
-	guiStatusDot *walk.Label
-	guiNodeLabel *walk.Label
-	guiHintLabel *walk.Label
-	guiList      *walk.ListBox
-	guiModel     *nodeListModel
-	guiImportBox *walk.TextEdit
-	guiLogBox    *walk.TextEdit
-	guiProgress  *walk.ProgressBar
+	guiMW         *walk.MainWindow
+	guiStatusDot  *walk.Label
+	guiNodeLabel  *walk.Label
+	guiHintLabel  *walk.Label
+	guiVerFFLabel *walk.Label
+	guiVerSBLabel *walk.Label
+	guiList       *walk.ListBox
+	guiModel      *nodeListModel
+	guiImportBox  *walk.TextEdit
+	guiLogBox     *walk.TextEdit
+	guiProgress   *walk.ProgressBar
 
 	btnSetCurrent *walk.PushButton
 	btnTestOne    *walk.PushButton
@@ -46,6 +49,7 @@ var (
 	btnFirefox    *walk.PushButton
 	btnUpdate     *walk.PushButton
 	btnFolder     *walk.PushButton
+	btnCheckUpd   *walk.PushButton
 
 	colorOK   = walk.RGB(0x1D, 0x8A, 0x3A)
 	colorBad  = walk.RGB(0xC0, 0x39, 0x2B)
@@ -64,6 +68,8 @@ type guiApp struct {
 	cancelFn  context.CancelFunc
 	sel       int  // 列表里选中的序号，自己记，不读原生控件（刷新重置列表会把原生选择冲掉）
 	restoring bool // 正在恢复选择时，忽略列表控件自己发出的序号变化事件
+
+	updMajorShown bool // 本次会话里“发现重大更新”的自动提醒是否已经弹过（只弹一次）
 }
 
 var g *guiApp
@@ -213,6 +219,7 @@ func guiRefresh() {
 		// 时也得能点，否则在装了 Firefox 的电脑上组装 U 盘时反而没法复制。
 		setEnabled(btnFirefox, g.busy == "" && !g.runner.Running)
 		setEnabled(btnUpdate, act.CanUpdateKernel)
+		setEnabled(btnCheckUpd, g.busy == "")
 		setEnabled(btnCancel, g.busy == "testing" || g.busy == "downloading")
 		if guiProgress != nil && g.busy == "" {
 			guiProgress.SetRange(0, 100)
@@ -565,10 +572,6 @@ func guiDoFirefox() {
 	// B）没装也行 → 从工具文件夹里的官方完整版安装包提取，全程不安装。
 	// 两种来源都在时，让用户自己选。
 	dst := filepath.Join(surfDir(g.root), "Firefox")
-	if fileExists(filepath.Join(dst, firefoxName())) {
-		msgInfo("准备浏览器", "工具包里已经有 Firefox 了（Surf\\Firefox），不用再准备。")
-		return
-	}
 	src := ""
 	for _, c := range []string{`C:\Program Files\Mozilla Firefox`, `C:\Program Files (x86)\Mozilla Firefox`} {
 		if st, err := os.Stat(filepath.Join(c, "firefox.exe")); err == nil && !st.IsDir() {
@@ -577,6 +580,28 @@ func guiDoFirefox() {
 		}
 	}
 	installer := FindFirefoxInstaller(g.root)
+
+	if fileExists(filepath.Join(dst, firefoxName())) {
+		// 已有浏览器：这里就是浏览器的更新入口——先把旧的改名备份，再走下面的准备流程换新版。
+		verText := ""
+		if cur := FirefoxLocalVersion(g.root); cur != "" {
+			verText = "（当前 " + cur + "）"
+		}
+		if src == "" && installer == "" {
+			msgInfo("准备浏览器", "工具包里已经有 Firefox 了"+verText+"（Surf\\Firefox）。\n\n要更新到新版，先备一个新版来源：把本机的 Firefox 升级到最新版，或者把新版官方完整安装包放进工具文件夹，然后再点「准备浏览器」，我会先把旧的备份好再换上。\n\n浏览器的数据（登录、历史）存在 Surf\\ff-data，与程序分开，更新程序不会动它。")
+			return
+		}
+		if !askYesNo("准备浏览器", "工具包里已经有 Firefox 了"+verText+"。\n\n要换成来源里的新版吗？点「是」：先把现有的改名为 Firefox.bak 备份（数据目录 ff-data 不动），再准备新版；中途失败，把 Firefox.bak 改回 Firefox 就能恢复。\n点「否」：保持不动。") {
+			return
+		}
+		bak := dst + ".bak"
+		_ = os.RemoveAll(bak)
+		if err := os.Rename(dst, bak); err != nil {
+			msgError("准备浏览器", "旧浏览器改名备份失败，没有动它："+err.Error())
+			return
+		}
+		guiLog("旧浏览器已备份为 Surf\\Firefox.bak；新版没准备好之前，把它改名回 Firefox 即可恢复。")
+	}
 
 	useInstaller := false
 	switch {
@@ -654,6 +679,76 @@ func guiDoUpdate() {
 	guiDoKernel()
 }
 
+// guiRunUpdateCheck 后台查浏览器与内核的最新版，回来刷新状态区里的两行版本对比。
+// manual=true（点「检查更新」）时弹窗给完整小结；自动检查（启动时跑一次）只在
+// 发现重大更新时弹窗提醒，且整个会话只弹一次。检测失败只写记录，不弹窗、不拦路。
+func guiRunUpdateCheck(manual bool) {
+	if g == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		res := CheckUpdates(ctx, g.root)
+		guiSync(func() {
+			labels := map[string]*walk.Label{"firefox": guiVerFFLabel, "singbox": guiVerSBLabel}
+			for _, c := range res {
+				lb := labels[c.Key]
+				if lb == nil {
+					continue
+				}
+				_ = lb.SetText(c.Line())
+				switch c.Level {
+				case UpdateMajor:
+					lb.SetTextColor(colorBad)
+				case UpdateMinor:
+					lb.SetTextColor(colorBusy)
+				default:
+					lb.SetTextColor(colorIdle)
+				}
+			}
+		})
+		var majors []ComponentUpdate
+		for _, c := range res {
+			guiLog("检查更新 · " + c.Line())
+			if c.Level == UpdateMajor {
+				majors = append(majors, c)
+			}
+		}
+		switch {
+		case manual:
+			lines := make([]string, 0, len(res))
+			for _, c := range res {
+				lines = append(lines, c.Line())
+			}
+			body := strings.Join(lines, "\n")
+			if len(majors) > 0 {
+				body += "\n\n" + majorAdvice(majors)
+			}
+			msgInfo("检查更新", body)
+		case len(majors) > 0 && !g.updMajorShown:
+			g.updMajorShown = true
+			msgInfo("发现重大更新", majorAdvice(majors))
+		}
+	}()
+}
+
+// majorAdvice 把重大更新列出来，并配上各自的更新办法。
+func majorAdvice(majors []ComponentUpdate) string {
+	var b strings.Builder
+	b.WriteString("有组件发布了新一代版本，建议及时更新：\n")
+	for _, c := range majors {
+		fmt.Fprintf(&b, "\n%s：%s → %s\n", c.Name, c.Current, c.Latest)
+		switch c.Key {
+		case "firefox":
+			b.WriteString("　更新办法：先把本机 Firefox 升级到最新版，或把新版官方完整安装包放进工具文件夹，再点「准备浏览器」——会先备份旧的再换上；浏览器数据（ff-data）不受影响。\n")
+		case "singbox":
+			b.WriteString("　更新办法：点「更新内核」，程序会下载新版、验好再换，旧版留备份可退回。\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 func guiDoFolder() {
 	_ = exec.Command("explorer.exe", g.root).Start()
 }
@@ -703,6 +798,8 @@ func runGUI() bool {
 					Label{AssignTo: &guiStatusDot, Text: "● …", Font: Font{Family: "Microsoft YaHei UI", PointSize: 10, Bold: true}},
 					Label{AssignTo: &guiNodeLabel, Text: "（还没有选中的节点）", Font: font},
 					Label{AssignTo: &guiHintLabel, Text: "", Font: font, TextColor: colorBad},
+					Label{AssignTo: &guiVerFFLabel, Text: "浏览器（Firefox）：…", Font: font, TextColor: colorIdle},
+					Label{AssignTo: &guiVerSBLabel, Text: "sing-box 内核：…", Font: font, TextColor: colorIdle},
 				},
 			},
 			GroupBox{
@@ -773,6 +870,7 @@ func runGUI() bool {
 					Label{Text: "工具：", Font: font, TextColor: colorIdle},
 					PushButton{AssignTo: &btnFirefox, Text: "准备浏览器", OnClicked: guiDoFirefox},
 					PushButton{AssignTo: &btnUpdate, Text: "更新内核", OnClicked: guiDoUpdate},
+					PushButton{AssignTo: &btnCheckUpd, Text: "检查更新", OnClicked: func() { guiRunUpdateCheck(true) }},
 					PushButton{AssignTo: &btnFolder, Text: "打开工具文件夹", OnClicked: guiDoFolder},
 					HSpacer{},
 					Label{Text: "内核与浏览器都是外置组件，按需准备", Font: font, TextColor: colorIdle},
@@ -820,6 +918,7 @@ func runGUI() bool {
 	}
 	guiLog("流程：导入节点 → 在列表里选中并设为当前 →（可先测试）→ 启动浏览器。")
 	guiRefresh()
+	guiRunUpdateCheck(false) // 启动自动查一次：浏览器与内核有没有新版，重大更新会弹窗提醒
 	guiMW.Run()
 	return true
 }
