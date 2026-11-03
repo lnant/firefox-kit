@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const AppVersion = "1.2.0"
+const AppVersion = "1.3.0"
 
 var logFn = func(s string) { fmt.Println(s) }
 

@@ -200,6 +200,74 @@ func RunSelfChecks() []CheckResult {
 	errDup := ReplaceLink(editLib, te, sampleSS)
 	out = append(out, check("修改链接：与他条重复拒绝", errDup != nil && te.Link == linkBefore, fmt.Sprintf("err=%v", errDup)))
 
+	// 手工输入模板（按协议的配置表）：逐协议填样例值拼链接，
+	// 必须能解析回对应协议且能生成配置
+	tplByID := map[string]*ManualTemplate{}
+	for i := range ManualTemplates {
+		tplByID[ManualTemplates[i].ID] = &ManualTemplates[i]
+	}
+	uuidA := "22222222-3333-4444-5555-666666666666"
+	pbkA := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	tplCases := []struct {
+		id, proto string
+		vals      map[string]string
+	}{
+		{"vless", "vless", map[string]string{"name": "手工-reality", "address": "203.0.113.20", "port": "443", "uuid": uuidA, "encryption": "none", "packetEncoding": "（无）", "type": "tcp", "security": "reality", "flow": "xtls-rprx-vision", "sni": "www.example.com", "pbk": pbkA, "sid": "abcd", "fp": "chrome"}},
+		{"vmess", "vmess", map[string]string{"name": "手工-argo", "address": "argo.example.com", "port": "443", "uuid": "11111111-2222-3333-4444-555555555555", "alterId": "0", "encryption": "auto", "type": "ws", "tls": "开", "host": "", "path": "/argo", "sni": ""}},
+		{"hysteria2", "hysteria2", map[string]string{"name": "手工-hy2", "address": "203.0.113.50", "port": "443", "password": "passw0rd", "sni": "hy.example.com", "insecure": "否", "obfs": "salamander", "obfspw": "obfspass"}},
+		{"tuic", "tuic", map[string]string{"name": "手工-tuic", "address": "203.0.113.60", "port": "443", "uuid": "33333333-4444-5555-6666-777777777777", "password": "passw0rd", "sni": "tuic.example.com", "congestion": "bbr", "insecure": "否"}},
+		{"anytls", "anytls", map[string]string{"name": "手工-anytls", "address": "203.0.113.80", "port": "443", "password": "passw0rd", "sni": "any.example.com", "insecure": "否"}},
+		{"socks5", "socks", map[string]string{"name": "手工-socks", "address": "203.0.113.101", "port": "1080", "username": "user1", "password": "passw0rd"}},
+	}
+	for _, c := range tplCases {
+		tpl := tplByID[c.id]
+		link, err := BuildManualLink(tpl, c.vals)
+		if err != nil {
+			out = append(out, check("手工模板 "+c.id, false, "拼链接失败："+err.Error()))
+			continue
+		}
+		n, err := ParseLink(link)
+		if err != nil {
+			out = append(out, check("手工模板 "+c.id, false, "解析失败："+err.Error()))
+			continue
+		}
+		cfgOK := true
+		if _, err := BuildConfig(n, 39901); err != nil {
+			cfgOK = false
+		}
+		out = append(out, check("手工模板 "+c.id, n.Proto == c.proto && cfgOK,
+			fmt.Sprintf("proto=%s 配置=%v", n.Proto, cfgOK)))
+	}
+	// VLESS 的 WS+TLS 变体（同一张表换安全/传输选项）
+	vtlsLink, errV := BuildManualLink(tplByID["vless"], map[string]string{
+		"name": "手工-vtls", "address": "tls.example.com", "port": "443", "uuid": uuidA,
+		"type": "ws", "security": "tls", "flow": "（无）", "path": "/vt", "host": "", "sni": "",
+	})
+	nV, errPV := ParseLink(vtlsLink)
+	out = append(out, check("手工模板 vless 的 ws+tls 变体",
+		errV == nil && errPV == nil && nV.Net == "ws" && nV.Security == "tls" && nV.Host == "tls.example.com",
+		fmt.Sprintf("err=%v/%v net=%s sec=%s", errV, errPV, nV.Net, nV.Security)))
+	// VMess 关 TLS 的变体（直连型）
+	vmessOff, errOff := BuildManualLink(tplByID["vmess"], map[string]string{
+		"address": "203.0.113.99", "port": "10086", "uuid": "11111111-2222-3333-4444-555555555555",
+		"alterId": "0", "encryption": "auto", "type": "ws", "tls": "关", "path": "/", "host": "", "sni": "",
+	})
+	nOff, errParseOff := ParseLink(vmessOff)
+	out = append(out, check("手工模板 vmess 关 TLS", errOff == nil && errParseOff == nil && nOff.Security == "none" && nOff.Port == 10086,
+		fmt.Sprintf("err=%v/%v", errOff, errParseOff)))
+	// SOCKS 无密码变体应落直连分支
+	socksBare, errBare := BuildManualLink(tplByID["socks5"], map[string]string{
+		"address": "203.0.113.102", "port": "1080", "username": "", "password": "",
+	})
+	nBare, errParseBare := ParseLink(socksBare)
+	out = append(out, check("手工模板 socks 无密码走直连", errBare == nil && errParseBare == nil && nBare.Branch() == BranchDirect,
+		fmt.Sprintf("err=%v/%v", errBare, errParseBare)))
+	// 必填拦截：VLESS 选 reality 却不填公钥必须报错
+	_, errReq := BuildManualLink(tplByID["vless"], map[string]string{
+		"address": "203.0.113.20", "port": "443", "uuid": uuidA, "security": "reality", "sni": "www.example.com",
+	})
+	out = append(out, check("手工模板必填拦截", errReq != nil, fmt.Sprintf("err=%v", errReq)))
+
 	// base64 订阅原文提取
 	blob := base64.StdEncoding.EncodeToString([]byte(sampleVMess + "\n" + sampleTrojan))
 	links := ExtractLinks(blob)

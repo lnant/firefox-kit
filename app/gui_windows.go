@@ -32,7 +32,6 @@ var (
 	guiList       *walk.ListBox
 	guiModel      *nodeListModel
 	guiImportBox  *walk.TextEdit
-	guiManualEdit *walk.LineEdit
 	guiLogBox     *walk.TextEdit
 	guiProgress   *walk.ProgressBar
 
@@ -42,7 +41,7 @@ var (
 	btnEditLink   *walk.PushButton
 	btnRename     *walk.PushButton
 	btnImport     *walk.PushButton
-	btnAddManual  *walk.PushButton
+	btnManual     *walk.PushButton
 	btnSub        *walk.PushButton
 	btnTestAll    *walk.PushButton
 	btnStart      *walk.PushButton
@@ -207,7 +206,7 @@ func guiRefresh() {
 		setEnabled(btnRename, selEntry != nil && g.busy == "")
 		setEnabled(btnEditLink, selEntry != nil && g.busy == "")
 		setEnabled(btnImport, g.busy == "")
-		setEnabled(btnAddManual, g.busy == "")
+		setEnabled(btnManual, g.busy == "")
 		setEnabled(btnSub, act.CanFetchSub)
 		setEnabled(btnTestAll, act.CanTestAll)
 		setEnabled(btnStart, act.CanStart)
@@ -366,30 +365,149 @@ func guiDoImport() {
 	guiRefresh()
 }
 
-// guiDoAddManual 第 1 步「手工输入」：一行框里手打/粘一条链接，点添加即录入。
-// 走与批量导入同一条校验管线（ImportText），反馈只针对这一条，说清成败。
-func guiDoAddManual() {
-	text := strings.TrimSpace(guiManualEdit.Text())
-	if text == "" {
-		msgInfo("手工输入", "先在手工输入框里输入一条节点链接，再点添加。")
+// guiDoManual 第 1 步「手工输入」：先选协议模板，再按模板填关键信息，
+// 程序拼成标准链接走 ImportText 入库（查重、反馈与粘贴导入一致）。
+func guiDoManual() {
+	t, ok := promptTemplate()
+	if !ok {
 		return
 	}
-	rep := ImportText(g.entries, text)
+	link, ok := promptManualForm(t)
+	if !ok {
+		return
+	}
+	rep := ImportText(g.entries, link)
 	g.entries = rep.Entries
 	switch {
 	case rep.Added > 0:
 		g.saveLib()
 		g.sel = len(g.entries) - 1 // 选中刚加的这条，下一步直接能用
-		_ = guiManualEdit.SetText("")
-		guiLog("手工输入：" + rep.Summary() + " —— " + g.entries[g.sel].Node.DisplayName())
+		guiLog("手工输入（" + t.Title + "）：" + rep.Summary() + " —— " + g.entries[g.sel].Node.DisplayName())
 	case rep.Duplicates > 0:
-		msgInfo("手工输入", "这条已经在节点库里了，没有重复添加。")
-	case len(rep.Failed) > 0:
-		msgError("手工输入", "这条没通过格式校验："+rep.Failed[0].Reason)
+		msgInfo("手工输入", "这个节点已经在库里了，没有重复添加。")
 	default:
-		msgInfo("手工输入", "没有找到可导入的节点，检查一下链接是不是完整。")
+		msgError("手工输入", "录入失败。") // BuildManualLink 已自检解析，理论上到不了这里
 	}
 	guiRefresh()
+}
+
+// promptTemplate 弹模板选择框：列出全部手工输入模板，返回选中的一个。
+func promptTemplate() (*ManualTemplate, bool) {
+	var dlg *walk.Dialog
+	var combo *walk.ComboBox
+	var okBtn, cancelBtn *walk.PushButton
+	titles := make([]string, 0, len(ManualTemplates))
+	for i := range ManualTemplates {
+		titles = append(titles, ManualTemplates[i].Title)
+	}
+	idx := -1
+	_, _ = Dialog{
+		AssignTo:      &dlg,
+		Title:         "手工输入 · 选模板",
+		DefaultButton: &okBtn,
+		CancelButton:  &cancelBtn,
+		MinSize:       Size{Width: 360, Height: 150},
+		Layout:        VBox{Spacing: 8},
+		Children: []Widget{
+			Label{Text: "先选节点的协议模板，再填它的关键信息："},
+			ComboBox{AssignTo: &combo, Model: titles, CurrentIndex: 0},
+			Composite{
+				Layout: HBox{Spacing: 6},
+				Children: []Widget{
+					HSpacer{},
+					PushButton{AssignTo: &okBtn, Text: "下一步", OnClicked: func() {
+						idx = combo.CurrentIndex()
+						dlg.Accept()
+					}},
+					PushButton{AssignTo: &cancelBtn, Text: "取消", OnClicked: func() { dlg.Cancel() }},
+				},
+			},
+		},
+	}.Run(guiMW)
+	if idx < 0 || idx >= len(ManualTemplates) {
+		return nil, false
+	}
+	return &ManualTemplates[idx], true
+}
+
+// promptManualForm 按模板字段拼一张填表对话框：点确定时先拼链接校验，
+// 不合格弹错、对话框不关，改对了再录入。
+func promptManualForm(t *ManualTemplate) (string, bool) {
+	var dlg *walk.Dialog
+	var okBtn, cancelBtn *walk.PushButton
+	type fieldWidget struct {
+		spec  FieldSpec
+		edit  *walk.LineEdit
+		combo *walk.ComboBox
+	}
+	fws := []*fieldWidget{}
+	children := []Widget{
+		Label{Text: "模板：" + t.Title + "（带 * 的必填）"},
+	}
+	for _, f := range t.Fields {
+		fw := &fieldWidget{spec: f}
+		label := f.Label
+		if f.Required {
+			label += " *"
+		}
+		row := Composite{
+			Layout: HBox{Spacing: 6},
+			Children: []Widget{
+				Label{Text: label, MinSize: Size{Width: 170, Height: 0}},
+			},
+		}
+		if len(f.Choices) > 0 {
+			cur := 0
+			for i, c := range f.Choices {
+				if c == f.Default {
+					cur = i
+					break
+				}
+			}
+			row.Children = append(row.Children, ComboBox{AssignTo: &fw.combo, Model: f.Choices, CurrentIndex: cur})
+		} else {
+			row.Children = append(row.Children, LineEdit{AssignTo: &fw.edit, Text: f.Default})
+		}
+		fws = append(fws, fw)
+		children = append(children, row)
+	}
+	result := ""
+	accepted := false
+	children = append(children, Composite{
+		Layout: HBox{Spacing: 6},
+		Children: []Widget{
+			HSpacer{},
+			PushButton{AssignTo: &okBtn, Text: "确定", OnClicked: func() {
+				vals := map[string]string{}
+				for _, fw := range fws {
+					if fw.combo != nil {
+						vals[fw.spec.Key] = fw.combo.Text()
+					} else {
+						vals[fw.spec.Key] = fw.edit.Text()
+					}
+				}
+				link, err := BuildManualLink(t, vals)
+				if err != nil {
+					msgError("手工输入", err.Error())
+					return // 不关对话框，改对了再点确定
+				}
+				result = link
+				accepted = true
+				dlg.Accept()
+			}},
+			PushButton{AssignTo: &cancelBtn, Text: "取消", OnClicked: func() { dlg.Cancel() }},
+		},
+	})
+	_, _ = Dialog{
+		AssignTo:      &dlg,
+		Title:         "手工输入 · " + t.Title,
+		DefaultButton: &okBtn,
+		CancelButton:  &cancelBtn,
+		MinSize:       Size{Width: 480, Height: 120 + 36*len(t.Fields)},
+		Layout:        VBox{Spacing: 6},
+		Children:      children,
+	}.Run(guiMW)
+	return result, accepted
 }
 
 func guiDoSub() {
@@ -903,16 +1021,9 @@ func runGUI() bool {
 					Composite{
 						Layout: HBox{Spacing: 6},
 						Children: []Widget{
-							Label{Text: "手工输入（一条）：", Font: font},
-							LineEdit{AssignTo: &guiManualEdit},
-							PushButton{AssignTo: &btnAddManual, Text: "添加", OnClicked: guiDoAddManual},
-						},
-					},
-					Composite{
-						Layout: HBox{Spacing: 6},
-						Children: []Widget{
 							PushButton{AssignTo: &btnImport, Text: "导入", OnClicked: guiDoImport},
 							PushButton{AssignTo: &btnSub, Text: "订阅导入", OnClicked: guiDoSub},
+							PushButton{AssignTo: &btnManual, Text: "手工输入", OnClicked: guiDoManual},
 							HSpacer{},
 							Label{Text: "导入后在下面列表里选节点", Font: font, TextColor: colorIdle},
 						},
