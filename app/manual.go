@@ -71,6 +71,7 @@ var ManualTemplates = []ManualTemplate{
 			{Key: "pbk", Label: "公钥 publicKey（reality 用）"},
 			{Key: "sid", Label: "短ID shortId（reality 用，可空）"},
 			{Key: "fp", Label: "指纹 fingerprint", Default: "chrome", Choices: []string{"chrome", "firefox", "safari", "ios", "android", "edge", "random"}},
+			{Key: "alpn", Label: "ALPN（tls / reality 用，可空，如 h2）"},
 		},
 		Build: func(v map[string]string) (string, error) {
 			q := url.Values{}
@@ -106,6 +107,10 @@ var ManualTemplates = []ManualTemplate{
 					sni = v["address"]
 				}
 				q.Set("sni", sni)
+				q.Set("fp", v["fp"])
+				if v["alpn"] != "" {
+					q.Set("alpn", v["alpn"])
+				}
 			}
 			if v["security"] == "reality" {
 				if v["pbk"] == "" {
@@ -115,7 +120,6 @@ var ManualTemplates = []ManualTemplate{
 				if v["sid"] != "" {
 					q.Set("sid", v["sid"])
 				}
-				q.Set("fp", v["fp"])
 			}
 			return buildURL("vless", url.User(v["uuid"]), v, q), nil
 		},
@@ -267,6 +271,7 @@ var ManualTemplates = []ManualTemplate{
 			{Key: "sni", Label: "SNI（可空）"}, fInsecure(),
 			{Key: "obfs", Label: "混淆类型（可空，如 salamander）"},
 			{Key: "obfspw", Label: "混淆密码（可空）"},
+			{Key: "alpn", Label: "ALPN（可空，如 h3）"},
 		},
 		Build: func(v map[string]string) (string, error) {
 			q := url.Values{}
@@ -280,6 +285,9 @@ var ManualTemplates = []ManualTemplate{
 					q.Set("obfs-password", v["obfspw"])
 				}
 			}
+			if v["alpn"] != "" {
+				q.Set("alpn", v["alpn"])
+			}
 			return buildURL("hysteria2", url.User(v["password"]), v, q), nil
 		},
 	},
@@ -289,11 +297,19 @@ var ManualTemplates = []ManualTemplate{
 			fName(), fAddr(), fPort("443"), fUUID(), fPassword(),
 			{Key: "sni", Label: "SNI（可空）"},
 			{Key: "congestion", Label: "拥塞控制", Default: "bbr", Choices: []string{"bbr", "cubic", "new_reno"}},
+			{Key: "udpRelay", Label: "UDP 中继模式", Default: "（默认）", Choices: []string{"（默认）", "native", "quic"}},
+			{Key: "alpn", Label: "ALPN（可空，如 h3）"},
 			fInsecure(),
 		},
 		Build: func(v map[string]string) (string, error) {
 			q := url.Values{}
 			q.Set("congestion_control", v["congestion"])
+			if v["udpRelay"] != "（默认）" {
+				q.Set("udp_relay_mode", v["udpRelay"])
+			}
+			if v["alpn"] != "" {
+				q.Set("alpn", v["alpn"])
+			}
 			if v["sni"] != "" {
 				q.Set("sni", v["sni"])
 			}
@@ -450,4 +466,216 @@ func yesNo(s string) string {
 		return "1"
 	}
 	return "0"
+}
+
+// templateForProto 按节点协议找模板（socks 的模板 ID 是 socks5）。
+func templateForProto(proto string) *ManualTemplate {
+	id := proto
+	if proto == "socks" {
+		id = "socks5"
+	}
+	for i := range ManualTemplates {
+		if ManualTemplates[i].ID == id {
+			return &ManualTemplates[i]
+		}
+	}
+	return nil
+}
+
+// ManualValuesForNode 把已解析的节点反解成对应模板的表单值，供「修改
+// 链接」预填表单：在表单里改字段再拼回链接，天然合格式，不会报格式错。
+// 判定标准严：按表单值重拼出的链接，生成的内核配置必须与原节点逐字
+// 一致（地址/端口/协议再单独核对），否则视为表单装不下（ok=false），
+// 调用方回退整条链接编辑，绝不在表单里静默丢参数。
+func ManualValuesForNode(n *Node) (*ManualTemplate, map[string]string, bool) {
+	t := templateForProto(n.Proto)
+	if t == nil {
+		return nil, nil, false
+	}
+	v := map[string]string{
+		"name":    n.Name,
+		"address": n.Address,
+		"port":    strconv.Itoa(n.Port),
+	}
+	yes := func(b bool) string {
+		if b {
+			return "是"
+		}
+		return "否"
+	}
+	switch n.Proto {
+	case "vless":
+		if n.SpiderX != "" {
+			return nil, nil, false // 表单没有蜘蛛路径的位置
+		}
+		v["alpn"] = strings.Join(n.ALPN, ",")
+		v["uuid"] = n.ID
+		v["encryption"] = "none" // 解析不保存 vless 加密参数，配置生成也不用它
+		v["packetEncoding"] = "（无）"
+		if n.PacketEncoding != "" {
+			v["packetEncoding"] = n.PacketEncoding
+		}
+		v["type"] = n.Net
+		v["security"] = n.Security
+		v["flow"] = "（无）"
+		if n.Flow != "" {
+			v["flow"] = n.Flow
+		}
+		v["path"] = n.Path
+		v["host"] = n.Host
+		v["serviceName"] = n.ServiceName
+		v["sni"] = n.SNI
+		v["pbk"] = n.PublicKey
+		v["sid"] = n.ShortID
+		v["fp"] = "chrome"
+		if n.Fingerprint != "" {
+			v["fp"] = n.Fingerprint
+		}
+	case "vmess":
+		v["uuid"] = n.ID
+		v["alterId"] = strconv.Itoa(n.AlterID)
+		v["encryption"] = "auto" // 解析忽略 scy、配置固定用 auto，这里只为链接可移植
+		v["type"] = n.Net
+		v["tls"] = "关"
+		if n.Security == "tls" {
+			v["tls"] = "开"
+		}
+		v["host"] = n.Host
+		v["path"] = n.Path
+		v["sni"] = n.SNI
+	case "trojan":
+		if len(n.ALPN) > 0 {
+			return nil, nil, false
+		}
+		v["password"] = n.ID
+		v["type"] = n.Net
+		v["path"] = n.Path
+		v["host"] = n.Host
+		v["serviceName"] = n.ServiceName
+		v["sni"] = n.SNI
+		v["insecure"] = yes(n.Insecure)
+	case "ss":
+		v["method"] = n.Method
+		v["password"] = n.ID // ss 的密码存在 ID 里（与 trojan 等一致）
+		if v["password"] == "" {
+			v["password"] = n.Password
+		}
+		v["plugin"] = n.Plugin
+		if n.PluginOpts != "" {
+			if v["plugin"] != "" {
+				v["plugin"] += ";"
+			}
+			v["plugin"] += n.PluginOpts
+		}
+	case "hysteria":
+		if n.ObfsPassword != "" {
+			return nil, nil, false
+		}
+		v["auth"] = n.AuthString
+		v["sni"] = n.SNI
+		v["insecure"] = yes(n.Insecure)
+		if n.UpMbps > 0 {
+			v["upmbps"] = strconv.Itoa(n.UpMbps)
+		}
+		if n.DownMbps > 0 {
+			v["downmbps"] = strconv.Itoa(n.DownMbps)
+		}
+		v["obfs"] = n.Obfs
+	case "hysteria2":
+		v["password"] = n.ID
+		v["sni"] = n.SNI
+		v["insecure"] = yes(n.Insecure)
+		v["obfs"] = n.Obfs
+		v["obfspw"] = n.ObfsPassword
+		v["alpn"] = strings.Join(n.ALPN, ",")
+	case "tuic":
+		v["uuid"] = n.ID
+		v["password"] = n.Password
+		v["sni"] = n.SNI
+		v["congestion"] = "bbr"
+		if n.Congestion != "" {
+			v["congestion"] = n.Congestion
+		}
+		v["udpRelay"] = "（默认）"
+		if n.UDPRelay != "" {
+			v["udpRelay"] = n.UDPRelay
+		}
+		v["alpn"] = strings.Join(n.ALPN, ",")
+		v["insecure"] = yes(n.Insecure)
+	case "anytls":
+		if len(n.ALPN) > 0 {
+			return nil, nil, false
+		}
+		v["password"] = n.ID
+		v["sni"] = n.SNI
+		v["insecure"] = yes(n.Insecure)
+	case "wireguard":
+		v["privateKey"] = n.PrivateKey
+		v["publicKey"] = n.PeerPublicKey
+		v["localAddr"] = strings.Join(n.LocalAddr, ",")
+		v["presharedKey"] = n.PreSharedKey
+		if n.MTU > 0 {
+			v["mtu"] = strconv.Itoa(n.MTU)
+		}
+		if len(n.Reserved) > 0 {
+			parts := make([]string, len(n.Reserved))
+			for i, r := range n.Reserved {
+				parts[i] = strconv.Itoa(r)
+			}
+			v["reserved"] = strings.Join(parts, ",")
+		}
+	case "ssh":
+		v["username"] = n.Username
+		v["password"] = n.Password
+	case "socks":
+		v["username"] = n.Username
+		v["password"] = n.Password
+	case "http":
+		v["username"] = n.Username
+		v["password"] = n.Password
+		v["tls"] = "关"
+		if n.Security == "tls" {
+			v["tls"] = "开"
+		}
+	}
+	// 下拉字段的值必须在选项内，否则表单表达不了这个节点
+	for _, f := range t.Fields {
+		if len(f.Choices) == 0 {
+			continue
+		}
+		val := v[f.Key]
+		if val == "" {
+			continue
+		}
+		okc := false
+		for _, c := range f.Choices {
+			if c == val {
+				okc = true
+				break
+			}
+		}
+		if !okc {
+			return nil, nil, false
+		}
+	}
+	// 重拼验证：配置逐字一致、地址端口协议不变，才算表单装得下
+	link2, err := BuildManualLink(t, v)
+	if err != nil {
+		return nil, nil, false
+	}
+	n2, err := ParseLink(link2)
+	if err != nil {
+		return nil, nil, false
+	}
+	if n2.Proto != n.Proto || n2.Address != n.Address || n2.Port != n.Port {
+		return nil, nil, false
+	}
+	c1, err1 := BuildConfig(n, LocalPort)
+	c2, err2 := BuildConfig(n2, LocalPort)
+	j1, jm1 := json.Marshal(c1)
+	j2, jm2 := json.Marshal(c2)
+	if err1 != nil || err2 != nil || jm1 != nil || jm2 != nil || string(j1) != string(j2) {
+		return nil, nil, false
+	}
+	return t, v, true
 }

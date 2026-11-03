@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const AppVersion = "1.3.0"
+const AppVersion = "1.1.0"
 
 var logFn = func(s string) { fmt.Println(s) }
 
@@ -146,6 +146,9 @@ func (a *consoleApp) state() KitState {
 	if a.current != nil {
 		s.HasCurrent = true
 		s.CurrentBranch = a.current.Node.Branch()
+		// 控制台没有独立的「选中」概念，测试测的就是当前节点
+		s.HasSelected = true
+		s.SelectedBranch = a.current.Node.Branch()
 	}
 	return s
 }

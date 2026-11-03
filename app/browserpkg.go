@@ -22,6 +22,13 @@ import (
 	"github.com/bodgit/sevenzip"
 )
 
+// FirefoxDownloadURL 是 Mozilla 官方下载分发地址：永远指向最新版
+// 完整安装包（win64、简体中文）。「准备浏览器」选自动下载时用它——
+// 下回来的是完整版安装包，走和本地安装包相同的提取流程。
+func FirefoxDownloadURL() string {
+	return "https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=zh-CN"
+}
+
 // FindFirefoxInstaller 在工具根目录找 Firefox 安装包文件。
 // 认官方命名（Firefox Setup 159.0.exe）与常见改名（Firefox_Setup_159.0.exe）。
 // 多个候选时返回最大的那个（完整版远大于在线版）。

@@ -200,6 +200,10 @@ func RunSelfChecks() []CheckResult {
 	errDup := ReplaceLink(editLib, te, sampleSS)
 	out = append(out, check("修改链接：与他条重复拒绝", errDup != nil && te.Link == linkBefore, fmt.Sprintf("err=%v", errDup)))
 
+	// 浏览器自动下载地址必须是 Mozilla 官方分发地址、win64 完整版
+	dlURL := FirefoxDownloadURL()
+	out = append(out, check("浏览器自动下载地址", strings.HasPrefix(dlURL, "https://download.mozilla.org/") && strings.Contains(dlURL, "os=win64") && strings.Contains(dlURL, "product=firefox-latest-ssl"), dlURL))
+
 	// 手工输入模板（按协议的配置表）：逐协议填样例值拼链接，
 	// 必须能解析回对应协议且能生成配置
 	tplByID := map[string]*ManualTemplate{}
@@ -214,8 +218,8 @@ func RunSelfChecks() []CheckResult {
 	}{
 		{"vless", "vless", map[string]string{"name": "手工-reality", "address": "203.0.113.20", "port": "443", "uuid": uuidA, "encryption": "none", "packetEncoding": "（无）", "type": "tcp", "security": "reality", "flow": "xtls-rprx-vision", "sni": "www.example.com", "pbk": pbkA, "sid": "abcd", "fp": "chrome"}},
 		{"vmess", "vmess", map[string]string{"name": "手工-argo", "address": "argo.example.com", "port": "443", "uuid": "11111111-2222-3333-4444-555555555555", "alterId": "0", "encryption": "auto", "type": "ws", "tls": "开", "host": "", "path": "/argo", "sni": ""}},
-		{"hysteria2", "hysteria2", map[string]string{"name": "手工-hy2", "address": "203.0.113.50", "port": "443", "password": "passw0rd", "sni": "hy.example.com", "insecure": "否", "obfs": "salamander", "obfspw": "obfspass"}},
-		{"tuic", "tuic", map[string]string{"name": "手工-tuic", "address": "203.0.113.60", "port": "443", "uuid": "33333333-4444-5555-6666-777777777777", "password": "passw0rd", "sni": "tuic.example.com", "congestion": "bbr", "insecure": "否"}},
+		{"hysteria2", "hysteria2", map[string]string{"name": "手工-hy2", "address": "203.0.113.50", "port": "443", "password": "passw0rd", "sni": "hy.example.com", "insecure": "否", "obfs": "salamander", "obfspw": "obfspass", "alpn": "h3"}},
+		{"tuic", "tuic", map[string]string{"name": "手工-tuic", "address": "203.0.113.60", "port": "443", "uuid": "33333333-4444-5555-6666-777777777777", "password": "passw0rd", "sni": "tuic.example.com", "congestion": "bbr", "udpRelay": "native", "alpn": "h3", "insecure": "否"}},
 		{"anytls", "anytls", map[string]string{"name": "手工-anytls", "address": "203.0.113.80", "port": "443", "password": "passw0rd", "sni": "any.example.com", "insecure": "否"}},
 		{"socks5", "socks", map[string]string{"name": "手工-socks", "address": "203.0.113.101", "port": "1080", "username": "user1", "password": "passw0rd"}},
 		{"trojan", "trojan", map[string]string{"name": "手工-trojan", "address": "203.0.113.30", "port": "443", "password": "passw0rd", "type": "ws", "path": "/tj", "host": "", "serviceName": "", "sni": "cdn.example.com", "insecure": "否"}},
@@ -243,6 +247,27 @@ func RunSelfChecks() []CheckResult {
 		}
 		out = append(out, check("手工模板 "+c.id, n.Proto == c.proto && cfgOK,
 			fmt.Sprintf("proto=%s 配置=%v", n.Proto, cfgOK)))
+		// 往返：节点反解成表单值再拼回来，配置必须逐字一致
+		// （「修改链接」把节点信息导入模板预填的地基）
+		rtOK, rtDetail := false, ""
+		if t2, vals2, ok2 := ManualValuesForNode(n); ok2 {
+			link2, err2 := BuildManualLink(t2, vals2)
+			n2, errP2 := ParseLink(link2)
+			if err2 == nil && errP2 == nil {
+				c1, e1 := BuildConfig(n, 39901)
+				c2, e2 := BuildConfig(n2, 39901)
+				j1, jm1 := json.Marshal(c1)
+				j2, jm2 := json.Marshal(c2)
+				// 模板必须对上节点自己的协议，对应错了后面全错
+				rtOK = e1 == nil && e2 == nil && jm1 == nil && jm2 == nil && string(j1) == string(j2) && t2.ID == c.id
+				rtDetail = fmt.Sprintf("配置一致=%v 模板=%s", rtOK, t2.ID)
+			} else {
+				rtDetail = fmt.Sprintf("重拼失败 %v / %v", err2, errP2)
+			}
+		} else {
+			rtDetail = "反解不适用"
+		}
+		out = append(out, check("模板往返 "+c.id, rtOK, rtDetail))
 	}
 	// VLESS 的 WS+TLS 变体（同一张表换安全/传输选项）
 	vtlsLink, errV := BuildManualLink(tplByID["vless"], map[string]string{
@@ -253,6 +278,12 @@ func RunSelfChecks() []CheckResult {
 	out = append(out, check("手工模板 vless 的 ws+tls 变体",
 		errV == nil && errPV == nil && nV.Net == "ws" && nV.Security == "tls" && nV.Host == "tls.example.com",
 		fmt.Sprintf("err=%v/%v net=%s sec=%s", errV, errPV, nV.Net, nV.Security)))
+	// WS+TLS 变体也要能反解回表单（host 缺省填服务器地址这类默认逻辑最容易在这里翻车）
+	vtlsRt := false
+	if nV != nil {
+		_, _, vtlsRt = ManualValuesForNode(nV)
+	}
+	out = append(out, check("手工模板 vless ws+tls 可反解", errPV == nil && vtlsRt, fmt.Sprintf("可反解=%v", vtlsRt)))
 	// VMess 关 TLS 的变体（直连型）
 	vmessOff, errOff := BuildManualLink(tplByID["vmess"], map[string]string{
 		"address": "203.0.113.99", "port": "10086", "uuid": "11111111-2222-3333-4444-555555555555",
@@ -282,12 +313,19 @@ func RunSelfChecks() []CheckResult {
 	// 置灰逻辑
 	a0 := ComputeActions(KitState{})
 	out = append(out, check("置灰：空库时不能启动且给原因", !a0.CanStart && a0.StartHint != "", a0.StartHint))
-	a1 := ComputeActions(KitState{NodeCount: 2, HasCurrent: true, CurrentBranch: BranchProtocol, KernelReady: false, FirefoxReady: true})
+	a1 := ComputeActions(KitState{NodeCount: 2, HasCurrent: true, CurrentBranch: BranchProtocol, HasSelected: true, SelectedBranch: BranchProtocol, KernelReady: false, FirefoxReady: true})
 	out = append(out, check("置灰：缺内核时不能启动/测试", !a1.CanStart && !a1.CanTestOne && a1.CanPrepareKernel, a1.StartHint))
 	a2 := ComputeActions(KitState{NodeCount: 2, HasCurrent: true, CurrentBranch: BranchDirect, FirefoxReady: true})
 	out = append(out, check("直连节点不需要内核也能启动", a2.CanStart, a2.StartHint))
-	a3 := ComputeActions(KitState{NodeCount: 2, HasCurrent: true, CurrentBranch: BranchProtocol, KernelReady: true, FirefoxReady: true, Running: true})
-	out = append(out, check("运行中锁定切换与测试", !a3.CanSelect && !a3.CanTestAll && a3.CanStop && a3.CanImport, a3.SelectHint))
+	a3 := ComputeActions(KitState{NodeCount: 2, HasCurrent: true, CurrentBranch: BranchProtocol, HasSelected: true, SelectedBranch: BranchProtocol, KernelReady: true, FirefoxReady: true, Running: true})
+	out = append(out, check("运行中可切换、不可测", a3.CanSelect && !a3.CanTestAll && !a3.CanTestOne && a3.CanStop && a3.CanImport, a3.TestOneHint))
+	a4 := ComputeActions(KitState{NodeCount: 2, HasCurrent: true, CurrentBranch: BranchProtocol, KernelReady: true, FirefoxReady: true})
+	out = append(out, check("置灰：没选中时不能测试选中", !a4.CanTestOne && a4.TestOneHint != "", a4.TestOneHint))
+	a5 := ComputeActions(KitState{NodeCount: 2, HasCurrent: true, CurrentBranch: BranchProtocol, HasSelected: true, SelectedBranch: BranchDirect, KernelReady: false, FirefoxReady: true})
+	out = append(out, check("置灰：选中的是直连节点时没内核也能测", a5.CanTestOne, a5.TestOneHint))
+	a6 := ComputeActions(KitState{NodeCount: 1, HasSelected: true, SelectedBranch: BranchProtocol})
+	out = append(out, check("置灰：没设当前节点时准备内核必须卡死", !a6.CanPrepareKernel, "没当前节点就不许准备内核"))
+	out = append(out, check("置灰：没设当前时准备浏览器也卡死、设了当前才亮", !a6.CanPrepareFirefox && ComputeActions(KitState{NodeCount: 1, HasCurrent: true, CurrentBranch: BranchProtocol, KernelReady: true}).CanPrepareFirefox, "先设活跃、再准备组件"))
 
 	// 组件更新检测：版本比较、重大/普通判定、application.ini 解析（纯本地，不联网）
 	out = append(out, check("版本比较：数字段逐段比（1.9 < 1.10）",
@@ -301,6 +339,31 @@ func RunSelfChecks() []CheckResult {
 		"train=2"))
 	sampleIni := "[App]\nVendor=Mozilla\nName=Firefox\nVersion=159.0\nBuildID=20261001000000\n\n[XRE]\nEnableExtensionManager=1\n"
 	out = append(out, check("application.ini 解析 Firefox 版本", parseAppIniVersion(sampleIni) == "159.0", parseAppIniVersion(sampleIni)))
+	out = append(out, check("本体更新判定（1.1.0→1.2.0 重大、→1.1.1 普通）",
+		updateLevel("1.1.0", "1.2.0", 2) == UpdateMajor && updateLevel("1.1.0", "1.1.1", 2) == UpdateMinor && updateLevel("1.1.0", "1.1.0", 2) == UpdateNone,
+		"train=2"))
+
+	// 浏览器下载默认目录 = 程序所在位置（工具包根目录的 Downloads）
+	dlRoot := filepath.Join(os.TempDir(), "foxkit-selftest-dl")
+	_ = os.RemoveAll(dlRoot)
+	_ = WriteProfile(dlRoot, &Node{Proto: "socks", Address: "203.0.113.1", Port: 1080})
+	ujs, _ := os.ReadFile(filepath.Join(profileDir(dlRoot), "user.js"))
+	dlDir := filepath.Join(dlRoot, "Downloads")
+	dlOK := strings.Contains(string(ujs), "browser.download.folderList\", 2") && strings.Contains(string(ujs), dlDir)
+	if st, err := os.Stat(dlDir); err != nil || !st.IsDir() {
+		dlOK = false
+	}
+	out = append(out, check("下载默认目录在程序位置", dlOK, dlDir))
+
+	// 自动检查更新开关：默认开、关得掉、开得回
+	auRoot := filepath.Join(os.TempDir(), "foxkit-selftest-au")
+	_ = os.RemoveAll(auRoot)
+	auOK := autoUpdateEnabled(auRoot)
+	setAutoUpdate(auRoot, false)
+	auOK = auOK && !autoUpdateEnabled(auRoot)
+	setAutoUpdate(auRoot, true)
+	auOK = auOK && autoUpdateEnabled(auRoot)
+	out = append(out, check("自动检查更新开关", auOK, "默认开/可关/可开"))
 
 	// 本地回环连通测试（假 SOCKS 服务器 -> 本机 HTTP 204 服务）
 	okc, detail := loopbackSocksTest()

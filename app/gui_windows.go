@@ -27,8 +27,9 @@ var (
 	guiStatusDot  *walk.Label
 	guiNodeLabel  *walk.Label
 	guiHintLabel  *walk.Label
-	guiVerFFLabel *walk.Label
-	guiVerSBLabel *walk.Label
+	guiVerAppLabel *walk.Label
+	guiVerFFLabel  *walk.Label
+	guiVerSBLabel  *walk.Label
 	guiList       *walk.ListBox
 	guiModel      *nodeListModel
 	guiImportBox  *walk.TextEdit
@@ -49,9 +50,9 @@ var (
 	btnKernel     *walk.PushButton
 	btnCancel     *walk.PushButton
 	btnFirefox    *walk.PushButton
-	btnUpdate     *walk.PushButton
 	btnFolder     *walk.PushButton
 	btnCheckUpd   *walk.PushButton
+	chkAutoUpd    *walk.CheckBox
 
 	colorOK   = walk.RGB(0x1D, 0x8A, 0x3A)
 	colorBad  = walk.RGB(0xC0, 0x39, 0x2B)
@@ -103,8 +104,14 @@ func guiLog(s string) {
 }
 
 func (a *guiApp) selected() *LibEntry {
-	// 选择记在 a.sel 里（由列表的序号变化事件在 UI 线程更新），不读原生控件：
-	// 列表每次重置，原生选择都可能被清掉，读它会出现“行明明蓝着、程序却说没选”。
+	// 以原生控件当前高亮为准：按钮点击时它就是用户眼睛看到的那一行。
+	// 事件缓存 a.sel 只作兜底——原生序号被列表重置清掉（-1）时才用它；
+	// 只信缓存的话，事件一旦漏记，点哪行都读到同一条（曾出现过）。
+	if guiList != nil {
+		if idx := guiList.CurrentIndex(); idx >= 0 && idx < len(a.entries) {
+			a.sel = idx
+		}
+	}
 	if a.sel < 0 || a.sel >= len(a.entries) {
 		return nil
 	}
@@ -125,6 +132,10 @@ func (a *guiApp) state() KitState {
 		s.HasCurrent = true
 		s.CurrentBranch = a.current.Node.Branch()
 	}
+	if a.sel >= 0 && a.sel < len(a.entries) {
+		s.HasSelected = true
+		s.SelectedBranch = a.entries[a.sel].Node.Branch()
+	}
 	return s
 }
 
@@ -135,8 +146,12 @@ func guiRefresh() {
 	}
 	// 用户把内核文件直接放在工具根目录时，先收编进 Surf/core 再算状态。
 	AdoptLooseKernel(g.root)
-	act := ComputeActions(g.state())
 	guiSync(func() {
+		// 先把列表的原生高亮同步进 a.sel，再算按钮状态：
+		// 在 UI 线程外、同步前算出来的「有没有选中」会和高亮脱节，
+		// 出现行选好了、按钮却灰着的怪象。
+		_ = g.selected()
+		act := ComputeActions(g.state())
 		// 列表：内容没变就不重置——重置会清掉原生选择，恢复又靠不住，
 		// 曾导致“行还蓝着、按钮却全是灰的”。
 		items := make([]string, 0, len(g.entries))
@@ -162,9 +177,13 @@ func guiRefresh() {
 				guiModel.items = items
 				guiModel.PublishItemsReset()
 				g.restoring = false
-				if guiList != nil && g.sel >= 0 && g.sel < len(items) && guiList.CurrentIndex() != g.sel {
-					_ = guiList.SetCurrentIndex(g.sel)
-				}
+			}
+			// 不管列表内容变没变，都把原生高亮对回 a.sel：
+			// 原生序号会被各种重置清掉，只在 changed 时恢复会和高亮脱节。
+			if guiList != nil && g.sel >= 0 && g.sel < len(items) && guiList.CurrentIndex() != g.sel {
+				g.restoring = true
+				_ = guiList.SetCurrentIndex(g.sel)
+				g.restoring = false
 			}
 		}
 		selEntry := g.selected()
@@ -202,7 +221,7 @@ func guiRefresh() {
 		}
 		setEnabled(btnSetCurrent, act.CanSelect && selEntry != nil)
 		setEnabled(btnTestOne, act.CanTestOne && selEntry != nil)
-		setEnabled(btnDelete, selEntry != nil && !g.runner.Running && g.busy == "")
+		setEnabled(btnDelete, selEntry != nil && g.busy == "")
 		setEnabled(btnRename, selEntry != nil && g.busy == "")
 		setEnabled(btnEditLink, selEntry != nil && g.busy == "")
 		setEnabled(btnImport, g.busy == "")
@@ -219,10 +238,19 @@ func guiRefresh() {
 				_ = btnKernel.SetText("准备内核")
 			}
 		}
-		// 「准备浏览器」是把已装 Firefox 复制进工具包做便携用：本机装了 Firefox
-		// 时也得能点，否则在装了 Firefox 的电脑上组装 U 盘时反而没法复制。
-		setEnabled(btnFirefox, g.busy == "" && !g.runner.Running)
-		setEnabled(btnUpdate, act.CanUpdateKernel)
+		// 浏览器按钮和内核按钮一个口径：没装显示「准备」，装了显示「更新」。
+		// 浏览器的更新入口就是这个按钮（换新版来源再点它换上），
+		// 名字不写明，用户会满界面找「更新浏览器」在哪。
+		if btnFirefox != nil {
+			if FirefoxReady(g.root) {
+				_ = btnFirefox.SetText("更新浏览器")
+			} else {
+				_ = btnFirefox.SetText("准备浏览器")
+			}
+		}
+		// 准备/更新浏览器和准备内核一样卡死流程：先设了当前（活跃）节点才亮，
+		// 没设当前时灰着，配上方的提示行告诉用户先设活跃节点。
+		setEnabled(btnFirefox, act.CanPrepareFirefox)
 		setEnabled(btnCheckUpd, g.busy == "")
 		setEnabled(btnCancel, g.busy == "testing" || g.busy == "downloading")
 		if guiProgress != nil && g.busy == "" {
@@ -433,6 +461,15 @@ func promptTemplate() (*ManualTemplate, bool) {
 // promptManualForm 按模板字段拼一张填表对话框：点确定时先拼链接校验，
 // 不合格弹错、对话框不关，改对了再录入。
 func promptManualForm(t *ManualTemplate) (string, bool) {
+	return promptManualFormVals(t, nil, "手工输入 · "+t.Title, false, "")
+}
+
+// promptManualFormVals 填表对话框：initial 非空时用它预填（「修改链接」
+// 把节点信息导入模板就靠它）；editMode 时不显示「配置名称」一行——
+// 改链接保留原名，名字要改走「改名」，免得在这里改了不生效还纳闷。
+// target 非空时在顶部标明正在改哪一条（名+服务器+端口），点确定前
+// 一眼能核对，别改错条把节点改废了。
+func promptManualFormVals(t *ManualTemplate, initial map[string]string, title string, editMode bool, target string) (string, bool) {
 	var dlg *walk.Dialog
 	var okBtn, cancelBtn *walk.PushButton
 	type fieldWidget struct {
@@ -444,7 +481,20 @@ func promptManualForm(t *ManualTemplate) (string, bool) {
 	children := []Widget{
 		Label{Text: "模板：" + t.Title + "（带 * 的必填）"},
 	}
-	for _, f := range t.Fields {
+	if target != "" {
+		children = append(children, Label{Text: "正在修改：" + target, Font: Font{Family: "Microsoft YaHei UI", PointSize: 9, Bold: true}})
+	}
+	fields := t.Fields
+	if editMode {
+		kept := make([]FieldSpec, 0, len(fields))
+		for _, f := range fields {
+			if f.Key != "name" {
+				kept = append(kept, f)
+			}
+		}
+		fields = kept
+	}
+	for _, f := range fields {
 		fw := &fieldWidget{spec: f}
 		label := f.Label
 		if f.Required {
@@ -456,17 +506,26 @@ func promptManualForm(t *ManualTemplate) (string, bool) {
 				Label{Text: label, MinSize: Size{Width: 170, Height: 0}},
 			},
 		}
+		initVal, hasInit := initial[f.Key]
 		if len(f.Choices) > 0 {
+			want := f.Default
+			if hasInit {
+				want = initVal
+			}
 			cur := 0
 			for i, c := range f.Choices {
-				if c == f.Default {
+				if c == want {
 					cur = i
 					break
 				}
 			}
 			row.Children = append(row.Children, ComboBox{AssignTo: &fw.combo, Model: f.Choices, CurrentIndex: cur})
 		} else {
-			row.Children = append(row.Children, LineEdit{AssignTo: &fw.edit, Text: f.Default})
+			text := f.Default
+			if hasInit {
+				text = initVal
+			}
+			row.Children = append(row.Children, LineEdit{AssignTo: &fw.edit, Text: text})
 		}
 		fws = append(fws, fw)
 		children = append(children, row)
@@ -486,9 +545,12 @@ func promptManualForm(t *ManualTemplate) (string, bool) {
 						vals[fw.spec.Key] = fw.edit.Text()
 					}
 				}
+				if editMode {
+					vals["name"] = initial["name"] // 名字不在表单里，拼链接时用原名占位（落盘时还会再对齐一次）
+				}
 				link, err := BuildManualLink(t, vals)
 				if err != nil {
-					msgError("手工输入", err.Error())
+					msgError(title, err.Error())
 					return // 不关对话框，改对了再点确定
 				}
 				result = link
@@ -500,10 +562,10 @@ func promptManualForm(t *ManualTemplate) (string, bool) {
 	})
 	_, _ = Dialog{
 		AssignTo:      &dlg,
-		Title:         "手工输入 · " + t.Title,
+		Title:         title,
 		DefaultButton: &okBtn,
 		CancelButton:  &cancelBtn,
-		MinSize:       Size{Width: 480, Height: 120 + 36*len(t.Fields)},
+		MinSize:       Size{Width: 480, Height: 120 + 36*len(fields)},
 		Layout:        VBox{Spacing: 6},
 		Children:      children,
 	}.Run(guiMW)
@@ -537,12 +599,40 @@ func guiDoSub() {
 
 func guiDoSetCurrent() {
 	e := g.selected()
-	if e == nil {
+	if e == nil || e == g.current {
 		return
 	}
+	if !g.runner.Running {
+		g.current = e
+		_ = SaveCurrentLink(g.root, e.Link)
+		guiLog("✓ 当前节点：" + e.Display())
+		guiRefresh()
+		return
+	}
+	// 运行中切换：新旧都走内核就重启内核无缝切换；涉及直连节点时保存
+	// 切换并停掉内核，提示重启浏览器才完全生效（与「停止」语义一致）。
+	old := g.current
 	g.current = e
 	_ = SaveCurrentLink(g.root, e.Link)
-	guiLog("✓ 当前节点：" + e.Display())
+	if old.Node.Branch() != BranchDirect && e.Node.Branch() != BranchDirect {
+		if err := g.runner.RestartCore(g.root, e.Node); err != nil {
+			g.current = old
+			_ = SaveCurrentLink(g.root, old.Link)
+			if rerr := g.runner.RestartCore(g.root, old.Node); rerr != nil {
+				g.runner.Running = false
+				msgError("切换节点", "新节点让内核起不来（"+err.Error()+"），已切回原节点，但旧内核也没能自动拉回来，请手动点「停止」再「启动」。")
+			} else {
+				msgError("切换节点", "没有切换：新节点让内核起不来（"+err.Error()+"），已切回原节点继续运行。")
+			}
+			guiRefresh()
+			return
+		}
+		guiLog("✓ 已切换当前节点并重启内核生效：" + e.Display())
+	} else {
+		g.runner.Stop(g.root)
+		guiLog("✓ 当前节点：" + e.Display() + "（涉及直连节点，浏览器重新启动后生效；内核已停）")
+		msgInfo("切换节点", "已切换为当前节点。\n涉及直连节点，浏览器要停止后重新启动才完全生效，内核已先停掉。")
+	}
 	guiRefresh()
 }
 
@@ -634,30 +724,87 @@ func promptLinkEdit(title, label, initial string) (string, bool) {
 	return result, accepted
 }
 
-// guiDoEditLink 第 2 步「修改链接」：把选中节点的链接整条换掉，
-// 校验与查重在 ReplaceLink 里，名字保持不变；改的是当前节点时同步当前节点文件。
+// guiDoEditLink 第 2 步「修改链接」：与「手工输入」同一套模式——先把
+// 节点信息导入它协议的配置表，在表里改字段再拼回链接，天然合格式、
+// 不会报格式错；参数超出表单范围的节点回退整条链接编辑。名字保持不变。
 func guiDoEditLink() {
 	e := g.selected()
 	if e == nil {
 		return
 	}
-	if e == g.current && g.runner.Running {
-		msgInfo("修改链接", "这个节点正在运行，先停止再改。")
+	if t, vals, ok := ManualValuesForNode(e.Node); ok {
+		target := e.Node.DisplayName() + "（" + e.Node.Address + ":" + fmt.Sprintf("%d", e.Node.Port) + "）"
+		link, accepted := promptManualFormVals(t, vals, "修改节点 · "+t.Title, true, target)
+		if !accepted {
+			return
+		}
+		// 落盘前最后一道核对：拼出的链接协议必须和原节点一致，
+		// 对不上说明对应关系出了问题，取消不改，别把节点改废了。
+		if nn, err := ParseLink(link); err != nil || nn.Proto != e.Node.Proto {
+			msgError("修改链接", "新链接和这个节点的协议对不上，已取消，没有做任何修改。")
+			guiLog("✘ 修改链接取消：协议核对不一致（原 " + e.Node.Proto + "）—— " + e.Node.DisplayName())
+			return
+		}
+		applyEditedLink(e, link)
 		return
 	}
-	link, ok := promptLinkEdit("修改链接", "把「"+e.Node.DisplayName()+"」的链接改成（改完会重新校验格式，名字不变）：", e.Link)
+	link, ok := promptLinkEdit("修改链接", "「"+e.Node.DisplayName()+"」的参数超出表单范围，用整条链接改（改完会重新校验格式，名字不变）：", e.Link)
 	if !ok {
 		return
 	}
+	applyEditedLink(e, link)
+}
+
+// applyEditedLink 落盘改链接（校验与查重在 ReplaceLink 里；改的是当前
+// 节点时同步当前节点文件）。改的正是运行中的当前节点、且新旧都走内核
+// 时，重启内核让新链接立即生效；重启失败自动换回旧链接、把旧内核拉
+// 回来。涉及直连节点（浏览器不经本地内核）时只保存，提示重启浏览器
+// 才完全生效。
+func applyEditedLink(e *LibEntry, link string) {
+	wasRunningCurrent := e == g.current && g.runner.Running
+	oldLink, oldNode := e.Link, e.Node
 	if err := ReplaceLink(g.entries, e, link); err != nil {
 		msgError("修改链接", "没有改："+err.Error())
+		return
+	}
+	if e.Link == oldLink {
+		guiLog("（链接没有变化）")
 		return
 	}
 	if e == g.current {
 		_ = SaveCurrentLink(g.root, e.Link)
 	}
 	g.saveLib()
-	guiLog("✓ 已修改链接：" + e.Node.DisplayName())
+	if !wasRunningCurrent {
+		guiLog("✓ 已修改链接：" + e.Node.DisplayName())
+		guiRefresh()
+		return
+	}
+	if oldNode.Branch() == BranchDirect || e.Node.Branch() == BranchDirect {
+		if e.Node.Branch() == BranchDirect {
+			g.runner.Stop(g.root) // 新节点不用内核：把旧内核停掉，状态对齐
+		}
+		guiLog("✓ 已修改链接并保存；涉及直连节点，浏览器停止后重新启动才完全生效。")
+		msgInfo("修改链接", "链接已改并保存。\n涉及直连节点，浏览器那边要停止后重新启动才完全生效。")
+		guiRefresh()
+		return
+	}
+	if err := g.runner.RestartCore(g.root, e.Node); err != nil {
+		_ = ReplaceLink(g.entries, e, oldLink)
+		if e == g.current {
+			_ = SaveCurrentLink(g.root, e.Link)
+		}
+		g.saveLib()
+		if rerr := g.runner.RestartCore(g.root, oldNode); rerr != nil {
+			g.runner.Running = false
+			msgError("修改链接", "新链接让内核起不来（"+err.Error()+"），已换回旧链接，但旧内核也没能自动拉回来，请手动点「停止」再「启动」。")
+		} else {
+			msgError("修改链接", "没有改：新链接让内核起不来（"+err.Error()+"），已换回旧链接并恢复运行。")
+		}
+		guiRefresh()
+		return
+	}
+	guiLog("✓ 已修改链接并重启内核，新链接已生效：" + e.Node.DisplayName())
 	guiRefresh()
 }
 
@@ -777,6 +924,10 @@ func guiDoCancel() {
 	}
 }
 
+// guiDoFirefox 是「准备浏览器/更新浏览器」按钮：来源三选一——
+// 复制本机已装的 Firefox、从工具文件夹里的完整安装包提取、
+// 或在弹窗里选自动下载最新版（见 guiDoFirefoxDownload）。
+// 已装了浏览器时先问更新意愿，并把旧的改名 .bak 备份再换。
 func guiDoFirefox() {
 	// 两种模式共存，效果一样（都把 Firefox 程序放进 Surf\Firefox）：
 	// A）本机已装 Firefox → 直接复制它的程序目录；
@@ -799,7 +950,9 @@ func guiDoFirefox() {
 			verText = "（当前 " + cur + "）"
 		}
 		if src == "" && installer == "" {
-			msgInfo("准备浏览器", "工具包里已经有 Firefox 了"+verText+"（Surf\\Firefox）。\n\n要更新到新版，先备一个新版来源：把本机的 Firefox 升级到最新版，或者把新版官方完整安装包放进工具文件夹，然后再点「准备浏览器」，我会先把旧的备份好再换上。\n\n浏览器的数据（登录、历史）存在 Surf\\ff-data，与程序分开，更新程序不会动它。")
+			if askYesNo("准备浏览器", "工具包里已经有 Firefox 了"+verText+"（Surf\\Firefox）。\n\n更新到新版，点「是」最省事：自动从 Mozilla 官网下载最新版并换上，旧的先备份为 Firefox.bak、数据目录 ff-data 不动，不用你再找来源；只是个别网络可能下载慢或连不上，长时间下不完就点「取消当前操作」，改走下面的办法。\n\n点「否」：这次先不动，之后自己备来源——把本机 Firefox 升级到最新版，或把新版完整安装包放进工具文件夹，再点这个按钮。") {
+				guiDoFirefoxDownload()
+			}
 			return
 		}
 		if !askYesNo("准备浏览器", "工具包里已经有 Firefox 了"+verText+"。\n\n要换成来源里的新版吗？点「是」：先把现有的改名为 Firefox.bak 备份（数据目录 ff-data 不动），再准备新版；中途失败，把 Firefox.bak 改回 Firefox 就能恢复。\n点「否」：保持不动。") {
@@ -828,7 +981,9 @@ func guiDoFirefox() {
 	case src != "":
 		useInstaller = false
 	default:
-		msgInfo("准备浏览器", "现在还没有可用的 Firefox 来源。\n\n两个办法（任选其一）：\n1）把 Firefox 官方完整版安装包（Firefox Setup … .exe，约 90MB）放进工具文件夹，再点这个按钮，我直接从安装包提取，不用先安装；注意不要用几百 KB 的在线安装包；\n2）先装好 Firefox（官方版），再点这个按钮，我会把它的程序复制进工具包。\n\n浏览器的数据（登录、历史）存在 Surf\\ff-data，与程序分开，更新程序不会动它。")
+		if askYesNo("准备浏览器", "现在还没有可用的 Firefox 来源。\n\n点「是」最省事：自动从 Mozilla 官网下载最新版 Firefox（完整版，约 90MB）并配置进工具包，不用先安装、不用备来源；只是个别网络可能不支持直连下载或速率很慢，真遇到长时间下不完，点「取消当前操作」停下，改用下面两种方式就行。\n\n点「否」：自己准备来源——\n1）把 Firefox 官方完整版安装包（Firefox Setup … .exe，约 90MB）放进工具文件夹，再点这个按钮，我直接从安装包提取，不用先安装；注意不要用几百 KB 的在线安装包；\n2）先装好 Firefox（官方版），再点这个按钮，我会把它的程序复制进工具包。\n\n浏览器的数据（登录、历史）存在 Surf\\ff-data，与程序分开，更新程序不会动它。") {
+			guiDoFirefoxDownload()
+		}
 		return
 	}
 
@@ -885,12 +1040,75 @@ func guiDoFirefox() {
 	}()
 }
 
-func guiDoUpdate() {
-	// 「更新内核」与「准备内核」走同一条下载路径：新版验过才换，旧版留备份。
-	guiDoKernel()
+// guiDoFirefoxDownload 是「准备浏览器」的第三种来源：自动下载。
+// 从 Mozilla 官网下载最新版完整安装包到 Surf/tmp，再走和本地安装包
+// 相同的提取流程；已装了浏览器时先把旧的改名 Firefox.bak 备份
+// （与其它更新路径一致）。下载可被「取消当前操作」中断。
+func guiDoFirefoxDownload() {
+	dst := filepath.Join(surfDir(g.root), "Firefox")
+	if fileExists(filepath.Join(dst, firefoxName())) {
+		bak := dst + ".bak"
+		_ = os.RemoveAll(bak)
+		if err := os.Rename(dst, bak); err != nil {
+			msgError("准备浏览器", "旧浏览器改名备份失败，没有动它："+err.Error())
+			return
+		}
+		guiLog("旧浏览器已备份为 Surf\\Firefox.bak；新版没准备好之前，把它改名回 Firefox 即可恢复。")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	g.setBusy("downloading", cancel)
+	go func() {
+		defer func() { g.setBusy("", nil); cancel() }()
+		tmpDir := filepath.Join(surfDir(g.root), "tmp")
+		if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+			guiLog("✘ 临时目录建不了：" + err.Error())
+			return
+		}
+		installer := filepath.Join(tmpDir, "Firefox Setup auto.exe")
+		defer os.Remove(installer)
+		guiBusyLabel = "正在下载 Firefox 最新版"
+		guiSetProgress(0)
+		guiLog("正在从 Mozilla 官网下载最新版 Firefox（完整版，约 90MB）…")
+		lastLog := -1
+		err := downloadFile(ctx, FirefoxDownloadURL(), installer, func(pct int) {
+			if pct >= 0 {
+				guiSetProgress(pct)
+				if pct/20 != lastLog {
+					lastLog = pct / 20
+					guiLog(fmt.Sprintf("  下载进度 %d%%", pct))
+				}
+			}
+		})
+		if err != nil {
+			if ctx.Err() != nil {
+				guiLog("已取消 Firefox 下载。")
+				return
+			}
+			guiLog("✘ Firefox 下载失败：" + err.Error())
+			msgError("准备浏览器", "下载失败："+err.Error()+"\n检查网络后重试，或改用本地安装包/先装好 Firefox 的办法。")
+			return
+		}
+		guiBusyLabel = "正在配置 Firefox"
+		guiSetProgress(0)
+		guiLog("下载完成，正在提取配置（要花几分钟）…")
+		lastLog = -1
+		prog := func(pct int) {
+			guiSetProgress(pct)
+			if pct/10 != lastLog {
+				lastLog = pct / 10
+				guiLog(fmt.Sprintf("  提取进度 %d%%", pct))
+			}
+		}
+		if err := ExtractFirefoxFromInstaller(installer, g.root, prog); err != nil {
+			guiLog("✘ 配置 Firefox 失败：" + err.Error())
+			msgError("准备浏览器", "配置失败："+err.Error())
+			return
+		}
+		guiLog("✓ 浏览器已就绪（自动下载最新版并配置完成）。")
+	}()
 }
 
-// guiRunUpdateCheck 后台查浏览器与内核的最新版，回来刷新状态区里的两行版本对比。
+// guiRunUpdateCheck 后台查工具本体、浏览器与内核的最新版，回来刷新状态区里的三行版本对比。
 // manual=true（点「检查更新」）时弹窗给完整小结；自动检查（启动时跑一次）只在
 // 发现重大更新时弹窗提醒，且整个会话只弹一次。检测失败只写记录，不弹窗、不拦路。
 func guiRunUpdateCheck(manual bool) {
@@ -902,7 +1120,7 @@ func guiRunUpdateCheck(manual bool) {
 		defer cancel()
 		res := CheckUpdates(ctx, g.root)
 		guiSync(func() {
-			labels := map[string]*walk.Label{"firefox": guiVerFFLabel, "singbox": guiVerSBLabel}
+			labels := map[string]*walk.Label{"foxkit": guiVerAppLabel, "firefox": guiVerFFLabel, "singbox": guiVerSBLabel}
 			for _, c := range res {
 				lb := labels[c.Key]
 				if lb == nil {
@@ -951,8 +1169,10 @@ func majorAdvice(majors []ComponentUpdate) string {
 	for _, c := range majors {
 		fmt.Fprintf(&b, "\n%s：%s → %s\n", c.Name, c.Current, c.Latest)
 		switch c.Key {
+		case "foxkit":
+			b.WriteString("　更新办法：到 https://github.com/lnant/firefox-kit/releases 下载新版 foxkit.exe，替换工具文件夹里的旧程序即可；节点与浏览器数据都在 Surf 文件夹里，不受影响。\n")
 		case "firefox":
-			b.WriteString("　更新办法：先把本机 Firefox 升级到最新版，或把新版官方完整安装包放进工具文件夹，再点「准备浏览器」——会先备份旧的再换上；浏览器数据（ff-data）不受影响。\n")
+			b.WriteString("　更新办法：点工具行的「更新浏览器」，在弹窗里点「是」即可自动下载最新版并换上（旧的先备份）；也可以先备好来源（本机 Firefox 升到最新版，或把新版完整安装包放进工具文件夹）再点它。浏览器数据（ff-data）不受影响。\n")
 		case "singbox":
 			b.WriteString("　更新办法：点「更新内核」，程序会下载新版、验好再换，旧版留备份可退回。\n")
 		}
@@ -1009,6 +1229,7 @@ func runGUI() bool {
 					Label{AssignTo: &guiStatusDot, Text: "● …", Font: Font{Family: "Microsoft YaHei UI", PointSize: 10, Bold: true}},
 					Label{AssignTo: &guiNodeLabel, Text: "（还没有选中的节点）", Font: font},
 					Label{AssignTo: &guiHintLabel, Text: "", Font: font, TextColor: colorBad},
+					Label{AssignTo: &guiVerAppLabel, Text: "工具本体（foxkit）：" + AppVersion, Font: font, TextColor: colorIdle},
 					Label{AssignTo: &guiVerFFLabel, Text: "浏览器（Firefox）：…", Font: font, TextColor: colorIdle},
 					Label{AssignTo: &guiVerSBLabel, Text: "sing-box 内核：…", Font: font, TextColor: colorIdle},
 				},
@@ -1082,8 +1303,15 @@ func runGUI() bool {
 				Children: []Widget{
 					Label{Text: "工具：", Font: font, TextColor: colorIdle},
 					PushButton{AssignTo: &btnFirefox, Text: "准备浏览器", OnClicked: guiDoFirefox},
-					PushButton{AssignTo: &btnUpdate, Text: "更新内核", OnClicked: guiDoUpdate},
 					PushButton{AssignTo: &btnCheckUpd, Text: "检查更新", OnClicked: func() { guiRunUpdateCheck(true) }},
+					CheckBox{AssignTo: &chkAutoUpd, Text: "自动检查更新", Checked: autoUpdateEnabled(root), OnCheckedChanged: func() {
+						setAutoUpdate(g.root, chkAutoUpd.Checked())
+						if chkAutoUpd.Checked() {
+							guiLog("自动检查更新：已打开（每次启动查一次工具本体、浏览器与内核）")
+						} else {
+							guiLog("自动检查更新：已关闭（仍可点「检查更新」手动查）")
+						}
+					}},
 					PushButton{AssignTo: &btnFolder, Text: "打开工具文件夹", OnClicked: guiDoFolder},
 					HSpacer{},
 					Label{Text: "内核与浏览器都是外置组件，按需准备", Font: font, TextColor: colorIdle},
@@ -1131,7 +1359,9 @@ func runGUI() bool {
 	}
 	guiLog("流程：导入节点 → 在列表里选中并设为当前 →（可先测试）→ 启动浏览器。")
 	guiRefresh()
-	guiRunUpdateCheck(false) // 启动自动查一次：浏览器与内核有没有新版，重大更新会弹窗提醒
+	if autoUpdateEnabled(root) {
+		guiRunUpdateCheck(false) // 启动自动查一次：工具本体、浏览器与内核有没有新版，重大更新会弹窗提醒
+	}
 	guiMW.Run()
 	return true
 }

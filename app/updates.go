@@ -1,8 +1,10 @@
 package main
 
-// 组件更新检测：浏览器（Firefox）与 sing-box 内核，本地版本对比官方最新版。
+// 组件更新检测：工具本体（foxkit）、浏览器（Firefox）与 sing-box 内核，
+// 本地版本对比官方最新版。
 //
 // 数据来源（都只问版本号，不下载任何东西）：
+//   - foxkit 最新版：本项目 GitHub releases/latest 的 tag。
 //   - Firefox 最新版：Mozilla 官方 product-details 接口的 LATEST_FIREFOX_VERSION。
 //     本工具历来不下载 Firefox（靠复制本机已装的或从官方安装包提取），检测同理。
 //   - sing-box 最新版：官方 GitHub releases/latest 的 tag，与「更新内核」同一来源。
@@ -228,9 +230,37 @@ func LatestKernelVersion(ctx context.Context) (string, error) {
 	return ver, nil
 }
 
-// CheckUpdates 检测两个组件，固定顺序返回（浏览器在前、内核在后）。
-// 两个联网查询并行；任一失败只影响它自己的那一行。
+// LatestAppVersion 查工具本体（foxkit）在 GitHub 上的最新发布版。
+func LatestAppVersion(ctx context.Context) (string, error) {
+	var rel struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := fetchJSON(ctx, "https://api.github.com/repos/lnant/firefox-kit/releases/latest", &rel); err != nil {
+		return "", err
+	}
+	return strings.TrimPrefix(rel.TagName, "v"), nil
+}
+
+// 自动检查更新开关：Surf/.no-auto-update 存在 = 关；默认开。
+// 只管「启动时自动查一次」，手动点「检查更新」不受影响。
+func autoUpdateEnabled(root string) bool {
+	return !fileExists(filepath.Join(surfDir(root), ".no-auto-update"))
+}
+
+func setAutoUpdate(root string, on bool) {
+	p := filepath.Join(surfDir(root), ".no-auto-update")
+	if on {
+		_ = os.Remove(p)
+	} else {
+		_ = os.MkdirAll(surfDir(root), 0o755)
+		_ = os.WriteFile(p, []byte("off\n"), 0o644)
+	}
+}
+
+// CheckUpdates 检测三个组件，固定顺序返回（工具本体、浏览器、内核）。
+// 三个联网查询并行；任一失败只影响它自己的那一行。
 func CheckUpdates(ctx context.Context, root string) []ComponentUpdate {
+	app := ComponentUpdate{Key: "foxkit", Name: "工具本体（foxkit）", Installed: true, Current: AppVersion}
 	ff := ComponentUpdate{Key: "firefox", Name: "浏览器（Firefox）", Installed: FirefoxReady(root)}
 	if ff.Installed {
 		ff.Current = FirefoxLocalVersion(root)
@@ -240,14 +270,20 @@ func CheckUpdates(ctx context.Context, root string) []ComponentUpdate {
 		sb.Current = KernelVersion(root)
 	}
 
-	var ffLatest, sbLatest string
-	var ffErr, sbErr error
+	var appLatest, ffLatest, sbLatest string
+	var appErr, ffErr, sbErr error
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
+	go func() { defer wg.Done(); appLatest, appErr = LatestAppVersion(ctx) }()
 	go func() { defer wg.Done(); ffLatest, ffErr = LatestFirefoxVersion(ctx) }()
 	go func() { defer wg.Done(); sbLatest, sbErr = LatestKernelVersion(ctx) }()
 	wg.Wait()
 
+	if appErr != nil {
+		app.Note = "联网失败"
+	} else {
+		app.Latest = appLatest
+	}
 	if ffErr != nil {
 		ff.Note = "联网失败"
 	} else {
@@ -258,7 +294,8 @@ func CheckUpdates(ctx context.Context, root string) []ComponentUpdate {
 	} else {
 		sb.Latest = sbLatest
 	}
+	app.Level = updateLevel(app.Current, app.Latest, 2)
 	ff.Level = updateLevel(ff.Current, ff.Latest, 1)
 	sb.Level = updateLevel(sb.Current, sb.Latest, 2)
-	return []ComponentUpdate{ff, sb}
+	return []ComponentUpdate{app, ff, sb}
 }

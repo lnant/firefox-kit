@@ -162,9 +162,17 @@ user_pref("browser.shell.checkDefaultBrowser", false);
 user_pref("browser.aboutwelcome.enabled", false);
 user_pref("signon.rememberSignons", true);
 `
-	content := "// foxkit 自动生成：代理指向与隐私设置。手改会在下次启动时被覆盖。\n" + proxy.String() + common
+	// 下载默认位置 = 程序所在位置（工具包根目录的 Downloads 文件夹），
+	// 便携使用时下载的东西不散落到别人电脑的系统下载目录里。
+	dl := downloadDir(root)
+	_ = os.MkdirAll(dl, 0o755)
+	download := fmt.Sprintf("user_pref(\"browser.download.folderList\", 2);\nuser_pref(\"browser.download.dir\", %q);\nuser_pref(\"browser.download.useDownloadDir\", true);\n", dl)
+	content := "// foxkit 自动生成：代理指向与隐私设置。手改会在下次启动时被覆盖。\n" + proxy.String() + common + download
 	return os.WriteFile(filepath.Join(dir, "user.js"), []byte(content), 0o644)
 }
+
+// downloadDir 浏览器下载的默认目录：工具包根目录下的 Downloads。
+func downloadDir(root string) string { return filepath.Join(root, "Downloads") }
 
 // Runner 管理本程序拉起的 sing-box 与 Firefox 进程。
 type Runner struct {
@@ -182,31 +190,8 @@ func (r *Runner) Start(root string, n *Node) error {
 		return fmt.Errorf("已经在运行了")
 	}
 	if n.Branch() != BranchDirect {
-		if !KernelReady(root) {
-			return fmt.Errorf("这个节点需要内核，先准备内核")
-		}
-		cfg := configPath(root)
-		if err := WriteConfig(n, cfg, LocalPort); err != nil {
+		if err := r.startCore(root, n); err != nil {
 			return err
-		}
-		if checked, err := CheckConfig(singboxPath(root), cfg); checked && err != nil {
-			// 自检没过：退回上一份配置并报错，不带病启动
-			if fileExists(cfg + ".prev") {
-				_ = copyFileSimple(cfg+".prev", cfg)
-			}
-			return err
-		}
-		cmd := exec.Command(singboxPath(root), "run", "-c", cfg)
-		cmd.Dir = surfDir(root)
-		prepCmd(cmd)
-		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("内核启动失败：%v", err)
-		}
-		r.core = cmd
-		_ = os.WriteFile(pidPath(root), []byte(strconv.Itoa(cmd.Process.Pid)), 0o644)
-		if !waitPort(LocalPort, 6*time.Second) {
-			r.stopCore()
-			return fmt.Errorf("内核没有正常起来（本地端口未就绪），换一个节点或稍后再试")
 		}
 	}
 	if err := WriteProfile(root, n); err != nil {
@@ -228,6 +213,47 @@ func (r *Runner) Start(root string, n *Node) error {
 	r.browser = fc
 	r.Running = true
 	return nil
+}
+
+// startCore 只起内核：生成配置→自检→拉起进程→等端口就绪。
+// Start 与 RestartCore 共用，保证两条路径的校验与回滚一致。
+func (r *Runner) startCore(root string, n *Node) error {
+	if !KernelReady(root) {
+		return fmt.Errorf("这个节点需要内核，先准备内核")
+	}
+	cfg := configPath(root)
+	if err := WriteConfig(n, cfg, LocalPort); err != nil {
+		return err
+	}
+	if checked, err := CheckConfig(singboxPath(root), cfg); checked && err != nil {
+		// 自检没过：退回上一份配置并报错，不带病启动
+		if fileExists(cfg + ".prev") {
+			_ = copyFileSimple(cfg+".prev", cfg)
+		}
+		return err
+	}
+	cmd := exec.Command(singboxPath(root), "run", "-c", cfg)
+	cmd.Dir = surfDir(root)
+	prepCmd(cmd)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("内核启动失败：%v", err)
+	}
+	r.core = cmd
+	_ = os.WriteFile(pidPath(root), []byte(strconv.Itoa(cmd.Process.Pid)), 0o644)
+	if !waitPort(LocalPort, 6*time.Second) {
+		r.stopCore()
+		return fmt.Errorf("内核没有正常起来（本地端口未就绪），换一个节点或稍后再试")
+	}
+	return nil
+}
+
+// RestartCore 运行中换内核：停掉旧内核、按新节点重新起。本地代理端口
+// 不变，已经打开的浏览器无感（不断流之外的连接会走新节点）。失败时
+// 内核处于停止状态，调用方决定是否用旧节点再拉起来。
+func (r *Runner) RestartCore(root string, n *Node) error {
+	r.stopCore()
+	_ = os.Remove(pidPath(root))
+	return r.startCore(root, n)
 }
 
 func (r *Runner) stopCore() {
