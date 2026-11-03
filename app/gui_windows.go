@@ -32,14 +32,17 @@ var (
 	guiList       *walk.ListBox
 	guiModel      *nodeListModel
 	guiImportBox  *walk.TextEdit
+	guiManualEdit *walk.LineEdit
 	guiLogBox     *walk.TextEdit
 	guiProgress   *walk.ProgressBar
 
 	btnSetCurrent *walk.PushButton
 	btnTestOne    *walk.PushButton
 	btnDelete     *walk.PushButton
+	btnEditLink   *walk.PushButton
 	btnRename     *walk.PushButton
 	btnImport     *walk.PushButton
+	btnAddManual  *walk.PushButton
 	btnSub        *walk.PushButton
 	btnTestAll    *walk.PushButton
 	btnStart      *walk.PushButton
@@ -202,7 +205,9 @@ func guiRefresh() {
 		setEnabled(btnTestOne, act.CanTestOne && selEntry != nil)
 		setEnabled(btnDelete, selEntry != nil && !g.runner.Running && g.busy == "")
 		setEnabled(btnRename, selEntry != nil && g.busy == "")
+		setEnabled(btnEditLink, selEntry != nil && g.busy == "")
 		setEnabled(btnImport, g.busy == "")
+		setEnabled(btnAddManual, g.busy == "")
 		setEnabled(btnSub, act.CanFetchSub)
 		setEnabled(btnTestAll, act.CanTestAll)
 		setEnabled(btnStart, act.CanStart)
@@ -361,6 +366,32 @@ func guiDoImport() {
 	guiRefresh()
 }
 
+// guiDoAddManual 第 1 步「手工输入」：一行框里手打/粘一条链接，点添加即录入。
+// 走与批量导入同一条校验管线（ImportText），反馈只针对这一条，说清成败。
+func guiDoAddManual() {
+	text := strings.TrimSpace(guiManualEdit.Text())
+	if text == "" {
+		msgInfo("手工输入", "先在手工输入框里输入一条节点链接，再点添加。")
+		return
+	}
+	rep := ImportText(g.entries, text)
+	g.entries = rep.Entries
+	switch {
+	case rep.Added > 0:
+		g.saveLib()
+		g.sel = len(g.entries) - 1 // 选中刚加的这条，下一步直接能用
+		_ = guiManualEdit.SetText("")
+		guiLog("手工输入：" + rep.Summary() + " —— " + g.entries[g.sel].Node.DisplayName())
+	case rep.Duplicates > 0:
+		msgInfo("手工输入", "这条已经在节点库里了，没有重复添加。")
+	case len(rep.Failed) > 0:
+		msgError("手工输入", "这条没通过格式校验："+rep.Failed[0].Reason)
+	default:
+		msgInfo("手工输入", "没有找到可导入的节点，检查一下链接是不是完整。")
+	}
+	guiRefresh()
+}
+
 func guiDoSub() {
 	u, ok := promptText("订阅导入", "把订阅地址粘贴到这里：", "")
 	if !ok || u == "" {
@@ -447,6 +478,68 @@ func guiDoRename() {
 		e.Link = base + "#" + name
 	}
 	g.saveLib()
+	guiRefresh()
+}
+
+// promptLinkEdit 弹一个多行输入框改链接用：链接动辄一两百字符，
+// 单行框看不全，用多行框打开就能整条核对再改。
+func promptLinkEdit(title, label, initial string) (string, bool) {
+	var dlg *walk.Dialog
+	var edit *walk.TextEdit
+	var okBtn, cancelBtn *walk.PushButton
+	result := ""
+	accepted := false
+	_, _ = Dialog{
+		AssignTo:      &dlg,
+		Title:         title,
+		DefaultButton: &okBtn,
+		CancelButton:  &cancelBtn,
+		MinSize:       Size{Width: 560, Height: 200},
+		Layout:        VBox{Spacing: 8},
+		Children: []Widget{
+			Label{Text: label},
+			TextEdit{AssignTo: &edit, Text: initial, VScroll: true},
+			Composite{
+				Layout: HBox{Spacing: 6},
+				Children: []Widget{
+					HSpacer{},
+					PushButton{AssignTo: &okBtn, Text: "确定", OnClicked: func() {
+						result = strings.TrimSpace(edit.Text())
+						accepted = true
+						dlg.Accept()
+					}},
+					PushButton{AssignTo: &cancelBtn, Text: "取消", OnClicked: func() { dlg.Cancel() }},
+				},
+			},
+		},
+	}.Run(guiMW)
+	return result, accepted
+}
+
+// guiDoEditLink 第 2 步「修改链接」：把选中节点的链接整条换掉，
+// 校验与查重在 ReplaceLink 里，名字保持不变；改的是当前节点时同步当前节点文件。
+func guiDoEditLink() {
+	e := g.selected()
+	if e == nil {
+		return
+	}
+	if e == g.current && g.runner.Running {
+		msgInfo("修改链接", "这个节点正在运行，先停止再改。")
+		return
+	}
+	link, ok := promptLinkEdit("修改链接", "把「"+e.Node.DisplayName()+"」的链接改成（改完会重新校验格式，名字不变）：", e.Link)
+	if !ok {
+		return
+	}
+	if err := ReplaceLink(g.entries, e, link); err != nil {
+		msgError("修改链接", "没有改："+err.Error())
+		return
+	}
+	if e == g.current {
+		_ = SaveCurrentLink(g.root, e.Link)
+	}
+	g.saveLib()
+	guiLog("✓ 已修改链接：" + e.Node.DisplayName())
 	guiRefresh()
 }
 
@@ -810,6 +903,14 @@ func runGUI() bool {
 					Composite{
 						Layout: HBox{Spacing: 6},
 						Children: []Widget{
+							Label{Text: "手工输入（一条）：", Font: font},
+							LineEdit{AssignTo: &guiManualEdit},
+							PushButton{AssignTo: &btnAddManual, Text: "添加", OnClicked: guiDoAddManual},
+						},
+					},
+					Composite{
+						Layout: HBox{Spacing: 6},
+						Children: []Widget{
 							PushButton{AssignTo: &btnImport, Text: "导入", OnClicked: guiDoImport},
 							PushButton{AssignTo: &btnSub, Text: "订阅导入", OnClicked: guiDoSub},
 							HSpacer{},
@@ -841,6 +942,7 @@ func runGUI() bool {
 							PushButton{AssignTo: &btnSetCurrent, Text: "设为当前节点", OnClicked: guiDoSetCurrent},
 							PushButton{AssignTo: &btnTestOne, Text: "测试选中", OnClicked: guiDoTestOne},
 							PushButton{AssignTo: &btnTestAll, Text: "测试全部", OnClicked: guiDoTestAll},
+							PushButton{AssignTo: &btnEditLink, Text: "修改链接", OnClicked: guiDoEditLink},
 							PushButton{AssignTo: &btnRename, Text: "改名", OnClicked: guiDoRename},
 							PushButton{AssignTo: &btnDelete, Text: "删除", OnClicked: guiDoDelete},
 						},

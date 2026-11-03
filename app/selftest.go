@@ -177,6 +177,29 @@ func RunSelfChecks() []CheckResult {
 	out = append(out, check("导入计数反馈", ok,
 		fmt.Sprintf("新增 %d / 重复 %d / 失败 %d（期望 3/1/2）", rep.Added, rep.Duplicates, len(rep.Failed))))
 
+	// 手工单条录入：第 1 步「手工输入」走的也是 ImportText，一次一条
+	manLib := ImportText(nil, sampleTrojan).Entries
+	manRep := ImportText(manLib, sampleSS)
+	manDup := ImportText(manRep.Entries, sampleSS)
+	out = append(out, check("手工单条录入与查重",
+		len(manLib) == 1 && manRep.Added == 1 && manDup.Duplicates == 1 && len(manDup.Entries) == 2,
+		fmt.Sprintf("首条 %d 条、单条新增 %d、再录重复 %d", len(manLib), manRep.Added, manDup.Duplicates)))
+
+	// 修改链接：第 2 步「修改链接」——改端口成功且保名、坏链接拒绝且不动、与他条重复拒绝
+	editLib := ImportText(nil, sampleTrojan+"\n"+sampleSS).Entries
+	te := editLib[0]
+	te.Node.Name = "我的节点" // 模拟用户改过名
+	goodEdit := "trojan://passw0rd@203.0.113.30:8443?peer=cdn.example.com#whatever"
+	errGood := ReplaceLink(editLib, te, goodEdit)
+	okEdit := errGood == nil && te.Node.Port == 8443 && te.Node.Name == "我的节点" &&
+		strings.HasSuffix(te.Link, "#我的节点") && te.Test == ""
+	out = append(out, check("修改链接：改端口保名", okEdit, fmt.Sprintf("err=%v link=%s", errGood, shorten(te.Link))))
+	linkBefore := te.Link
+	errBad := ReplaceLink(editLib, te, "vmess://!!!not-base64!!!")
+	out = append(out, check("修改链接：坏链接拒绝且不动", errBad != nil && te.Link == linkBefore, fmt.Sprintf("err=%v", errBad)))
+	errDup := ReplaceLink(editLib, te, sampleSS)
+	out = append(out, check("修改链接：与他条重复拒绝", errDup != nil && te.Link == linkBefore, fmt.Sprintf("err=%v", errDup)))
+
 	// base64 订阅原文提取
 	blob := base64.StdEncoding.EncodeToString([]byte(sampleVMess + "\n" + sampleTrojan))
 	links := ExtractLinks(blob)

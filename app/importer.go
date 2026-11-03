@@ -7,6 +7,7 @@ package main
 // 失败的候选条目留在结果里，用户改完可以重试，不会一关对话框就丢。
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -90,6 +91,47 @@ func ImportText(existing []*LibEntry, text string) *ImportReport {
 // ImportLinks 把已提取好的链接列表（订阅拉取的结果）并入节点库。
 func ImportLinks(existing []*LibEntry, links []string) *ImportReport {
 	return ImportText(existing, strings.Join(links, "\n"))
+}
+
+// ReplaceLink 把已有条目的链接换成新链接（第 2 步「修改链接」用）：
+//   - 新链接先过格式校验，不过直接报错，原条目一点不动
+//   - 与库里其他条目重复（dedupKey 相同）报错，原条目不动
+//   - 保留条目现在的显示名：名字是用户在工具里认节点的依据，改链接不改名；
+//     与「改名」同一口径——名字同步写回新链接的 # 片段（vmess 除外，
+//     它的名字在链接体里，沿用改名的既有处理）
+//   - 链接真变了才清掉旧的测试结果（那是测老链接得出的）
+func ReplaceLink(entries []*LibEntry, e *LibEntry, newLink string) error {
+	newLink = strings.TrimSpace(newLink)
+	if newLink == "" {
+		return fmt.Errorf("链接是空的")
+	}
+	if newLink == e.Link {
+		return nil // 没改动
+	}
+	n, err := ParseLink(newLink)
+	if err != nil {
+		return err
+	}
+	k := dedupKey(n)
+	for _, x := range entries {
+		if x != e && dedupKey(x.Node) == k {
+			return fmt.Errorf("和已有节点「%s」是同一个节点（重复了）", x.Node.DisplayName())
+		}
+	}
+	if keep := e.Node.Name; keep != "" {
+		n.Name = keep
+		if !strings.HasPrefix(newLink, "vmess://") {
+			base := newLink
+			if i := strings.Index(base, "#"); i >= 0 {
+				base = base[:i]
+			}
+			newLink = base + "#" + keep
+		}
+	}
+	e.Link = newLink
+	e.Node = n
+	e.Test = ""
+	return nil
 }
 
 // candidatesOf 从粘贴文本里挑出候选条目：
