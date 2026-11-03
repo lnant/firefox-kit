@@ -102,9 +102,8 @@
 - **粘贴导入**：节点链接、一行一个的裸 SOCKS、链接夹在一段文字里、甚至整段
   订阅原文（base64 的那串）都能直接粘贴到导入框，程序自己把链接挑出来。
 - **手工输入**（v1.3.0 起）：点「手工输入」，先按协议选一张配置表
-  （VLESS、VMess、Trojan、Shadowsocks、Hysteria、Hysteria2、TUIC、
-  AnyTLS、WireGuard、SSH、SOCKS、HTTP——解析与 sing-box 内核配置都
-  支持的协议全都有表），再照着表填服务器、端口、用户 ID/密码等关键
+  （foxkit 的解析列表包含 sing-box 内核配置支持的协议：VLESS、
+  VMess、Trojan等12种格式），再照着表填服务器、端口、用户 ID/密码等关键
   信息，传输协议
   （tcp/ws/grpc）和传输层安全（none/tls/reality）、流控、TLS 开关都在
   表里选——Reality 与 WS+TLS 是 VLESS 表里的选项组合，Argo 与直连是

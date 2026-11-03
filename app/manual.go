@@ -2,7 +2,7 @@ package main
 
 // 手工输入模板：点「手工输入」先按协议选一张
 // 配置表，再在表里填关键信息、选传输与安全类型，程序拼成标准节点链接
-// 入库。协议范围 = foxkit 解析与 sing-box 内核配置都支持的全部协议：
+// 入库。foxkit 的解析列表包含 sing-box 内核配置支持的协议（12 种）：
 //   VLESS / VMess / Trojan / Shadowsocks / Hysteria / Hysteria2 / TUIC /
 //   AnyTLS / WireGuard / SSH / SOCKS / HTTP
 // （Mieru / Naïve / ShadowTLS / Trojan Go 不在此列：
