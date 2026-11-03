@@ -1,11 +1,11 @@
 package main
 
-// 手工输入模板（仿 NekoBox 的手动输入）：点「手工输入」先按协议选一张
+// 手工输入模板：点「手工输入」先按协议选一张
 // 配置表，再在表里填关键信息、选传输与安全类型，程序拼成标准节点链接
 // 入库。协议范围 = foxkit 解析与 sing-box 内核配置都支持的全部协议：
 //   VLESS / VMess / Trojan / Shadowsocks / Hysteria / Hysteria2 / TUIC /
 //   AnyTLS / WireGuard / SSH / SOCKS / HTTP
-// （NekoBox 列表里的 Mieru / Naïve / ShadowTLS / Trojan Go 不在此列：
+// （Mieru / Naïve / ShadowTLS / Trojan Go 不在此列：
 //   解析与配置生成都还没接，硬塞模板就是填了不能用的假功能。）
 // 7 合 1 的七种链都落在这些表里：Reality 与 WS+TLS 是 VLESS 表里
 // 「传输层安全 / 传输协议」两个选项的组合，Argo 与直连是 VMess 表里
