@@ -218,6 +218,12 @@ func RunSelfChecks() []CheckResult {
 		{"tuic", "tuic", map[string]string{"name": "手工-tuic", "address": "203.0.113.60", "port": "443", "uuid": "33333333-4444-5555-6666-777777777777", "password": "passw0rd", "sni": "tuic.example.com", "congestion": "bbr", "insecure": "否"}},
 		{"anytls", "anytls", map[string]string{"name": "手工-anytls", "address": "203.0.113.80", "port": "443", "password": "passw0rd", "sni": "any.example.com", "insecure": "否"}},
 		{"socks5", "socks", map[string]string{"name": "手工-socks", "address": "203.0.113.101", "port": "1080", "username": "user1", "password": "passw0rd"}},
+		{"trojan", "trojan", map[string]string{"name": "手工-trojan", "address": "203.0.113.30", "port": "443", "password": "passw0rd", "type": "ws", "path": "/tj", "host": "", "serviceName": "", "sni": "cdn.example.com", "insecure": "否"}},
+		{"ss", "ss", map[string]string{"name": "手工-ss", "address": "203.0.113.40", "port": "8388", "method": "aes-256-gcm", "password": "passw0rd", "plugin": ""}},
+		{"hysteria", "hysteria", map[string]string{"name": "手工-hy1", "address": "203.0.113.55", "port": "443", "auth": "authpass", "sni": "hy1.example.com", "insecure": "否", "upmbps": "50", "downmbps": "100", "obfs": ""}},
+		{"wireguard", "wireguard", map[string]string{"name": "手工-wg", "address": "203.0.113.70", "port": "51820", "privateKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "publicKey": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=", "localAddr": "172.16.0.2/32", "presharedKey": "", "mtu": "1280", "reserved": ""}},
+		{"ssh", "ssh", map[string]string{"name": "手工-ssh", "address": "203.0.113.90", "port": "22", "username": "user1", "password": "passw0rd"}},
+		{"http", "http", map[string]string{"name": "手工-http", "address": "203.0.113.103", "port": "8080", "username": "user1", "password": "passw0rd", "tls": "关"}},
 	}
 	for _, c := range tplCases {
 		tpl := tplByID[c.id]

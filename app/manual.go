@@ -2,8 +2,11 @@ package main
 
 // 手工输入模板（仿 NekoBox 的手动输入）：点「手工输入」先按协议选一张
 // 配置表，再在表里填关键信息、选传输与安全类型，程序拼成标准节点链接
-// 入库。协议范围 = sing-box 7 合 1 用到的 + SOCKS：
-//   VLESS / VMess / Hysteria2 / TUIC / AnyTLS / SOCKS5
+// 入库。协议范围 = foxkit 解析与 sing-box 内核配置都支持的全部协议：
+//   VLESS / VMess / Trojan / Shadowsocks / Hysteria / Hysteria2 / TUIC /
+//   AnyTLS / WireGuard / SSH / SOCKS / HTTP
+// （NekoBox 列表里的 Mieru / Naïve / ShadowTLS / Trojan Go 不在此列：
+//   解析与配置生成都还没接，硬塞模板就是填了不能用的假功能。）
 // 7 合 1 的七种链都落在这些表里：Reality 与 WS+TLS 是 VLESS 表里
 // 「传输层安全 / 传输协议」两个选项的组合，Argo 与直连是 VMess 表里
 // TLS 开关的区别。拼出的链接必须能被 ParseLink 原样解析（自检逐项验）。
@@ -161,6 +164,103 @@ var ManualTemplates = []ManualTemplate{
 		},
 	},
 	{
+		ID: "trojan", Title: "Trojan",
+		Fields: []FieldSpec{
+			fName(), fAddr(), fPort("443"), fPassword(),
+			{Key: "type", Label: "传输协议", Default: "tcp", Choices: []string{"tcp", "ws", "grpc"}},
+			{Key: "path", Label: "路径 path（ws 用）"},
+			{Key: "host", Label: "Host（ws 用，可空 = 同服务器）"},
+			{Key: "serviceName", Label: "服务名 serviceName（grpc 用）"},
+			{Key: "sni", Label: "SNI（可空，空 = 同服务器）"},
+			fInsecure(),
+		},
+		Build: func(v map[string]string) (string, error) {
+			q := url.Values{}
+			q.Set("type", v["type"])
+			switch v["type"] {
+			case "ws":
+				path := v["path"]
+				if path == "" {
+					path = "/"
+				}
+				q.Set("path", path)
+				host := v["host"]
+				if host == "" {
+					host = v["address"]
+				}
+				q.Set("host", host)
+			case "grpc":
+				if v["serviceName"] != "" {
+					q.Set("serviceName", v["serviceName"])
+				}
+			}
+			sni := v["sni"]
+			if sni == "" {
+				sni = v["address"]
+			}
+			q.Set("sni", sni)
+			q.Set("allowInsecure", yesNo(v["insecure"]))
+			return buildURL("trojan", url.User(v["password"]), v, q), nil
+		},
+	},
+	{
+		ID: "ss", Title: "Shadowsocks",
+		Fields: []FieldSpec{
+			fName(), fAddr(), fPort("8388"),
+			{Key: "method", Label: "加密方法", Default: "aes-256-gcm", Choices: []string{"aes-256-gcm", "aes-128-gcm", "chacha20-ietf-poly1305", "aes-128-cfb", "aes-256-cfb", "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305", "none"}},
+			fPassword(),
+			{Key: "plugin", Label: "插件（可空，如 obfs-local;obfs-host=xx）"},
+		},
+		Build: func(v map[string]string) (string, error) {
+			ui := base64.RawURLEncoding.EncodeToString([]byte(v["method"] + ":" + v["password"]))
+			port, _ := strconv.Atoi(v["port"])
+			u := url.URL{
+				Scheme:   "ss",
+				User:     url.User(ui),
+				Host:     net.JoinHostPort(v["address"], strconv.Itoa(port)),
+				Fragment: v["name"],
+			}
+			if v["plugin"] != "" {
+				q := url.Values{}
+				q.Set("plugin", v["plugin"])
+				u.RawQuery = q.Encode()
+			}
+			return u.String(), nil
+		},
+	},
+	{
+		ID: "hysteria", Title: "Hysteria",
+		Fields: []FieldSpec{
+			fName(), fAddr(), fPort("443"),
+			{Key: "auth", Label: "认证 auth（可空）"},
+			{Key: "sni", Label: "SNI（可空）"},
+			fInsecure(),
+			{Key: "upmbps", Label: "上行 Mbps（可空）"},
+			{Key: "downmbps", Label: "下行 Mbps（可空）"},
+			{Key: "obfs", Label: "混淆（可空）"},
+		},
+		Build: func(v map[string]string) (string, error) {
+			q := url.Values{}
+			if v["auth"] != "" {
+				q.Set("auth", v["auth"])
+			}
+			if v["sni"] != "" {
+				q.Set("sni", v["sni"])
+			}
+			q.Set("insecure", yesNo(v["insecure"]))
+			if v["upmbps"] != "" {
+				q.Set("upmbps", v["upmbps"])
+			}
+			if v["downmbps"] != "" {
+				q.Set("downmbps", v["downmbps"])
+			}
+			if v["obfs"] != "" {
+				q.Set("obfs", v["obfs"])
+			}
+			return buildURL("hysteria", nil, v, q), nil
+		},
+	},
+	{
 		ID: "hysteria2", Title: "Hysteria2",
 		Fields: []FieldSpec{
 			fName(), fAddr(), fPort("443"), fPassword(),
@@ -217,6 +317,50 @@ var ManualTemplates = []ManualTemplate{
 		},
 	},
 	{
+		ID: "wireguard", Title: "WireGuard",
+		Fields: []FieldSpec{
+			fName(), fAddr(), fPort("51820"),
+			{Key: "privateKey", Label: "私钥 privateKey", Required: true},
+			{Key: "publicKey", Label: "对端公钥 publicKey", Required: true},
+			{Key: "localAddr", Label: "本地地址", Default: "172.16.0.2/32"},
+			{Key: "presharedKey", Label: "预共享密钥（可空）"},
+			{Key: "mtu", Label: "MTU（可空）"},
+			{Key: "reserved", Label: "reserved（可空，如 0,0,0）"},
+		},
+		Build: func(v map[string]string) (string, error) {
+			q := url.Values{}
+			q.Set("publickey", v["publicKey"])
+			q.Set("address", v["localAddr"])
+			if v["presharedKey"] != "" {
+				q.Set("presharedkey", v["presharedKey"])
+			}
+			if v["mtu"] != "" {
+				q.Set("mtu", v["mtu"])
+			}
+			if v["reserved"] != "" {
+				q.Set("reserved", v["reserved"])
+			}
+			return buildURL("wireguard", url.User(v["privateKey"]), v, q), nil
+		},
+	},
+	{
+		ID: "ssh", Title: "SSH",
+		Fields: []FieldSpec{
+			fName(), fAddr(), fPort("22"),
+			{Key: "username", Label: "用户名", Required: true},
+			{Key: "password", Label: "密码（可空）"},
+		},
+		Build: func(v map[string]string) (string, error) {
+			var user *url.Userinfo
+			if v["password"] != "" {
+				user = url.UserPassword(v["username"], v["password"])
+			} else {
+				user = url.User(v["username"])
+			}
+			return buildURL("ssh", user, v, nil), nil
+		},
+	},
+	{
 		ID: "socks5", Title: "SOCKS",
 		Fields: []FieldSpec{
 			fName(), fAddr(), fPort("1080"),
@@ -233,6 +377,28 @@ var ManualTemplates = []ManualTemplate{
 				}
 			}
 			return buildURL("socks5", user, v, nil), nil
+		},
+	},
+	{
+		ID: "http", Title: "HTTP",
+		Fields: []FieldSpec{
+			fName(), fAddr(), fPort("8080"),
+			{Key: "username", Label: "用户名", Required: true},
+			{Key: "password", Label: "密码（可空）"},
+			{Key: "tls", Label: "TLS（https 代理）", Default: "关", Choices: []string{"关", "开"}},
+		},
+		Build: func(v map[string]string) (string, error) {
+			var user *url.Userinfo
+			if v["password"] != "" {
+				user = url.UserPassword(v["username"], v["password"])
+			} else {
+				user = url.User(v["username"])
+			}
+			scheme := "http"
+			if v["tls"] == "开" {
+				scheme = "https"
+			}
+			return buildURL(scheme, user, v, nil), nil
 		},
 	},
 }
